@@ -1,0 +1,12 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+.midi-drums-placeholder {
+  padding: 2rem;
+  text-align: center;
+  color: var(--fb-textDim, #9ca3af);
+}
+
+.midi-drums-placeholder h2 {
+  color: var(--fb-text, #e5e7eb);
+  margin-bottom: 0.5rem;
+}

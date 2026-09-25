@@ -1,0 +1,12 @@
+{
+  "id": "midi_drums",
+  "name": "MIDI Drums",
+  "version": "0.1.0",
+  "description": "Play drum charts with a MIDI drum controller (placeholder — not yet functional).",
+  "category": "practice",
+  "icon": "🥁",
+  "nav": { "label": "MIDI Drums" },
+  "script": "screen.js",
+  "scriptType": "classic",
+  "styles": "assets/plugin.css"
+}
