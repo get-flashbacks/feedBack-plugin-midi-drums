@@ -1,0 +1,18 @@
+{
+  "id": "my-plugin",
+  "name": "My Plugin",
+  "version": "0.1.0",
+  "description": "A feedBack plugin template with screen, settings, and server routes.",
+  "type": "visualization",
+  "nav": { "label": "My Plugin", "screen": "plugin-my-plugin" },
+  "script": "screen.js",
+  "scriptType": "classic",
+  "styles": "assets/plugin.css",
+  "settings": {
+    "html": "settings.html",
+    "category": "custom"
+  },
+  "routes": "routes.py",
+  "icon": "🎨",
+  "minHost": "1.0.0"
+}

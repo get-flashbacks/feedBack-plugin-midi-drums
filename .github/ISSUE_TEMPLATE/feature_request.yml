@@ -1,0 +1,53 @@
+name: Feature request
+description: Suggest a new capability or workflow improvement.
+title: "[Feature]: "
+labels: ["enhancement", "needs triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem or opportunity
+      description: What workflow gap does this solve?
+      placeholder: When practicing or authoring in FeedBack, I want...
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - screen.js / runtime behavior
+        - settings.html / settings persistence
+        - plugin reload or idempotency
+        - FeedBack core integration
+        - performance during playback
+        - documentation or packaging
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: What should change from the user's perspective?
+    validations:
+      required: true
+  - type: textarea
+    id: implementation_notes
+    attributes:
+      label: Implementation notes
+      description: Mention relevant files, plugin lifecycle concerns, API/data format changes, or performance risks.
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: What must be true for this to be considered done?
+      placeholder: |
+        - [ ] The user can...
+        - [ ] The change survives reload/reopen...
+        - [ ] No console/server errors appear...
+    validations:
+      required: true
+  - type: textarea
+    id: references
+    attributes:
+      label: References or mockups

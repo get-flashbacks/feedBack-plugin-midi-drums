@@ -1,0 +1,55 @@
+name: Task or improvement
+description: Track cleanup, refactors, documentation, research, or non-bug work.
+title: "[Task]: "
+labels: ["task", "needs triage"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What should be accomplished?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - screen.js / runtime behavior
+        - settings.html / settings persistence
+        - plugin reload or idempotency
+        - FeedBack core integration
+        - performance during playback
+        - documentation or packaging
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: What is included, and what is intentionally out of scope?
+  - type: textarea
+    id: checklist
+    attributes:
+      label: Checklist
+      description: Break the work into concrete steps.
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - low
+        - medium
+        - high
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation
+      placeholder: Reload the plugin, open it from FeedBack, test during playback, and check console errors.

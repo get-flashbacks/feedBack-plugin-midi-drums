@@ -1,0 +1,34 @@
+name: custom-checks
+
+# Org-wide pre-merge checks (no print() in routes.py, safe server_files
+# relpaths). Templated in here so any plugin repo created via "Use this
+# template" inherits it automatically — see
+# get-flashbacks/feedBack-plugin-template's README for the copy/rename step
+# that turns my-plugin/ into your plugin's own folder.
+#
+# Deliberately does NOT check folder-name==id: actions/checkout names the
+# workspace after the git repo, not the manifest id, and this org's repo
+# names commonly differ from plugin ids (e.g. feedBack-plugin-feedpakr's id
+# is "feedpakr") — so that check produced false failures and was dropped
+# org-wide. The real folder-name==id invariant applies at install time, once
+# someone copies the plugin into a Host's plugins/ dir.
+#
+# Points at the org's shared reusable workflow. If that workflow doesn't
+# exist yet at this ref, this job will fail with a "workflow not found"
+# error rather than silently skipping — that's expected until the org sets
+# it up (see get-flashbacks org docs / ask an admin).
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  checks:
+    uses: get-flashbacks/.github/.github/workflows/custom-checks.yml@main
+    with:
+      # my-plugin/ is this template's example plugin folder. If you copied
+      # it to a differently-named folder (per the README's rename step),
+      # update this path to match — it must equal your plugin.json's "id".
+      plugin-dir: my-plugin

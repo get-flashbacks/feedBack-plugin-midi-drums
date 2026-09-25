@@ -1,0 +1,166 @@
+/*
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ * Styles for my-plugin.
+ *
+ * All selectors are scoped under the plugin's own class names
+ * (.my-plugin / .my-plugin-settings) so styles don't leak into
+ * the rest of the app (spec §6.3, §6.6).
+ *
+ * The Host applies these styles only while the plugin's screen
+ * is active. When the screen is inactive, these styles are unloaded.
+ */
+
+.my-plugin {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  padding: 1.5rem;
+  max-width: 600px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+}
+
+.my-plugin h2 {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.my-plugin section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.my-plugin section > h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 500;
+}
+
+.my-plugin [data-role="increment-button"] {
+  padding: 0.5rem 1rem;
+  font-size: 1rem;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.my-plugin [data-role="increment-button"]:hover {
+  background-color: rgba(0, 0, 0, 0.05);
+}
+
+.my-plugin [data-role="counter"] {
+  font-size: 2rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.my-plugin [data-role="color-display"] {
+  padding: 0.5rem 1rem;
+  background-color: var(--color-bg, #f0f0f0);
+  border-radius: 4px;
+  font-size: 0.95rem;
+}
+
+/* Settings panel styles */
+
+.my-plugin-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.my-plugin-settings fieldset {
+  margin: 0;
+  padding: 0;
+  border: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.my-plugin-settings legend {
+  margin: 0;
+  font-weight: 600;
+  font-size: 0.95rem;
+  padding: 0;
+}
+
+.my-plugin-settings label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.95rem;
+}
+
+.my-plugin-settings__color-select,
+.my-plugin-settings__intensity-slider {
+  padding: 0.5rem;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  font: inherit;
+}
+
+.my-plugin-settings__intensity-slider {
+  cursor: pointer;
+  width: 100%;
+}
+
+.my-plugin-settings label [type="checkbox"] {
+  width: 1em;
+  height: 1em;
+  cursor: pointer;
+  margin-right: 0.5em;
+}
+
+.my-plugin-settings label:has([type="checkbox"]) {
+  flex-direction: row;
+  align-items: center;
+  gap: 0;
+}
+
+.my-plugin-settings__save-button {
+  padding: 0.75rem 1.5rem;
+  font-size: 1rem;
+  font-weight: 500;
+  background-color: #0066cc;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+  align-self: flex-start;
+}
+
+.my-plugin-settings__save-button:hover {
+  background-color: #0052a3;
+}
+
+.my-plugin-settings__save-button:active {
+  background-color: #003d7a;
+}
+
+/* Responsive */
+
+@media (prefers-color-scheme: dark) {
+  .my-plugin {
+    color: #e0e0e0;
+  }
+
+  .my-plugin [data-role="color-display"] {
+    background-color: rgba(255, 255, 255, 0.1);
+  }
+
+  .my-plugin-settings__color-select,
+  .my-plugin-settings__intensity-slider {
+    background-color: rgba(255, 255, 255, 0.05);
+    color: inherit;
+  }
+
+  .my-plugin-settings__save-button:hover {
+    background-color: #0d7ae6;
+  }
+}

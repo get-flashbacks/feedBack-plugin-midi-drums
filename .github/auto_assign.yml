@@ -1,0 +1,6 @@
+# Auto-assign configuration for kentaro-m/auto-assign-action
+addReviewers: true
+addAssignees: author
+reviewers:
+  - carochacs
+numberOfReviewers: 0
