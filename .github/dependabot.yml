@@ -17,3 +17,8 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+    # Group eligible version updates after the major-version ignore above.
+    # Security updates remain separate. This does not enable auto-merge.
+    groups:
+      version-updates:
+        patterns: ["*"]
