@@ -1,20 +1,24 @@
-# Group minor/patch version updates to limit PR noise.
-# Preserve existing schedules and major-version restrictions; no auto-merge.
 version: 2
 updates:
-- package-ecosystem: github-actions
-  directory: /
-  schedule:
-    interval: monthly
-  open-pull-requests-limit: 5
-  ignore:
-  - dependency-name: '*'
-    update-types:
-    - version-update:semver-major
-  groups:
-    minor-and-patch:
-      patterns:
-      - '*'
-      update-types:
-      - minor
-      - patch
+  # Keep GitHub Actions up to date. Dependabot opens a PR bumping each
+  # action to its next tagged release (or resolves a SHA pin to the
+  # SHA behind a newer tag, for repos that pin by commit).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    # Patch/minor bumps get a PR opened normally; major version bumps
+    # (which can change an action's inputs/outputs) are excluded
+    # entirely, so they never get a PR without a human deciding to
+    # bump manually. No auto-merge is configured in this repo — every
+    # Dependabot PR, including patch/minor ones, still needs a human
+    # to review and merge it.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    # Group eligible version updates after the major-version ignore above.
+    # Security updates remain separate. This does not enable auto-merge.
+    groups:
+      compatible-updates:
+        patterns: ["*"]
