@@ -1,0 +1,32 @@
+{
+  "id": "midi-drums",
+  "name": "MIDI Drums",
+  "version": "0.1.0",
+  "description": "Reads drum triggers from MIDI devices through the core midi-input domain, so calibration and scoring work on any keyboard, pad controller or e-kit module.",
+  "type": "input",
+  "nav": { "label": "MIDI Drums", "screen": "plugin-midi-drums" },
+  "screen": "screen.html",
+  "script": "screen.js",
+  "scriptType": "classic",
+  "styles": "assets/plugin.css",
+  "routes": "routes.py",
+  "category": "practice",
+  "standards": [
+    "capability-pipelines.v1",
+    "plugin-runtime-idempotent.v1"
+  ],
+  "capabilities": {
+    "midi-input": {
+      "roles": ["requester"],
+      "requests": ["discover", "list-sources", "select-source", "open-source", "close-source"],
+      "mode": "active",
+      "compatibility": "degrade-noop",
+      "ownership": "requester-only",
+      "safety": "sensitive",
+      "version": 1,
+      "description": "Picks the drum-trigger MIDI devices through the core midi-input domain (the Web-MIDI provider ships built-in with the domain). Absent domain means no MIDI devices; the plugin fails soft."
+    }
+  },
+  "icon": "🥁",
+  "minHost": "1.0.0"
+}
