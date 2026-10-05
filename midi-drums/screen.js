@@ -452,12 +452,14 @@
         }
 
         async function activate() {
+            // A fresh discovery already restores, so restoring again here would
+            // only repeat that work. Once discovery is latched, though,
+            // discover() short-circuits and this is the only thing that re-opens
+            // devices: returning to the screen (or re-binding after a
+            // re-hydration) closed them on the way out.
+            const alreadyDiscovered = discovered;
             await discover();
-            // discover() short-circuits once it has succeeded, so it cannot be
-            // the only thing that re-opens devices: returning to the screen (or
-            // re-binding after a re-hydration) has to restore them here too.
-            // restore() skips sources that are already open.
-            await restore();
+            if (alreadyDiscovered) await restore();
         }
 
         // Terminal teardown, used when screen.js is re-executed so the previous
