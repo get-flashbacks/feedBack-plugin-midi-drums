@@ -477,8 +477,6 @@
             activateListeners.clear();
         }
 
-        bindSourcesChanged();
-
         return {
             version: 1,
             getState,
