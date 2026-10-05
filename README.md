@@ -2,6 +2,15 @@
 
 A reference template for creating [feedBack plugins](https://github.com/got-feedBack/feedback-plugin-spec).
 
+## Plugins in this repository
+
+| Directory | Purpose |
+|---|---|
+| `my-plugin/` | The reference template described below. Copy and rename it — it is not used as-is. |
+| `midi-drums/` | Device-access layer for MIDI drum controllers. Opens several input devices at once and merges their note-ons into one tagged stream, via the Host's `window.feedBack.midiInput` capability rather than the Web MIDI API. See [`midi-drums/README.md`](midi-drums/README.md). |
+
+Everything below this section documents `my-plugin/` specifically.
+
 ## ⚠️ DISCLAIMER AND WARRANTY
 
 **This template is provided "AS-IS" without any warranty of any kind, express or implied.** No warranty is given that this template is correct, complete, safe, or fit for any particular purpose.

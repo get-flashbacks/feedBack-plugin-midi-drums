@@ -1,0 +1,59 @@
+<!--
+  SPDX-License-Identifier: AGPL-3.0-or-later
+  Screen markup for midi-drums.
+
+  The Host injects this into the container it owns (`#plugin-midi-drums`,
+  class `screen`) before running screen.js. screen.js finds these nodes by
+  `data-role` inside that root; nothing here is queried globally.
+
+  Device access only: this screen owns the midi-input conversation
+  (discover / list / open / close) and reports what the domain hands back.
+  Kit calibration, chart reading and scoring land on top of this later.
+-->
+<div class="midi-drums">
+  <header class="midi-drums__header">
+    <h2 class="midi-drums__title">MIDI Drums</h2>
+    <p class="midi-drums__lede" data-role="status">Looking for MIDI devices&hellip;</p>
+  </header>
+
+  <section class="midi-drums__panel">
+    <div class="midi-drums__panel-head">
+      <h3 class="midi-drums__panel-title">Trigger devices</h3>
+      <button type="button" class="midi-drums__button" data-role="rescan">
+        Rescan
+      </button>
+    </div>
+
+    <p class="midi-drums__hint">
+      Tick every device that sends drum triggers. A kick pedal on one interface
+      and pads on another can be open at the same time &mdash; each hit is tagged
+      with the device it came from, so calibration can tell them apart.
+    </p>
+
+    <p class="midi-drums__empty" data-role="empty" hidden>
+      No MIDI devices yet. Plug one in, then press <strong>Rescan</strong>.
+    </p>
+
+    <ul class="midi-drums__devices" data-role="devices"></ul>
+
+    <p class="midi-drums__saved" data-role="saved" hidden></p>
+  </section>
+
+  <section class="midi-drums__panel">
+    <div class="midi-drums__panel-head">
+      <h3 class="midi-drums__panel-title">Incoming hits</h3>
+      <span class="midi-drums__counter" data-role="hit-count">0</span>
+    </div>
+
+    <p class="midi-drums__hint">
+      Note-ons from every open device, newest first. If this stays empty while
+      you are hitting pads, the right device is not ticked.
+    </p>
+
+    <p class="midi-drums__empty" data-role="hit-empty">
+      Waiting for input&hellip;
+    </p>
+
+    <ol class="midi-drums__hits" data-role="hits"></ol>
+  </section>
+</div>
