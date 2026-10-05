@@ -184,7 +184,8 @@ def setup(app: FastAPI, context: dict) -> None:
             to stream the request body above."""
             with write_lock:
                 merged = {**_read(), **incoming}
-                config_dir.mkdir(parents=True, exist_ok=True)
+                # config_dir was created in setup() before any route was
+                # registered, so it is already there.
                 # Written to a sibling then renamed: a torn or truncated write
                 # would leave invalid JSON, and _read()'s corrupt-file recovery
                 # would then reset the user's whole selection to empty.
