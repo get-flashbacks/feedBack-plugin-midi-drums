@@ -41,6 +41,98 @@
 
   <section class="midi-drums__panel">
     <div class="midi-drums__panel-head">
+      <h3 class="midi-drums__panel-title">Kit calibration</h3>
+      <div class="midi-drums__panel-actions">
+        <button type="button" class="midi-drums__button" data-role="wizard-start" disabled>
+          Start calibration wizard
+        </button>
+        <button type="button" class="midi-drums__button" data-role="wizard-reset" disabled>
+          Reset wizard
+        </button>
+      </div>
+    </div>
+
+    <p class="midi-drums__hint" data-role="drumtab-hint">
+      Waiting for a loaded song/drum chart to determine which pieces to calibrate.
+    </p>
+
+    <div class="midi-drums__wizard" data-role="wizard" hidden>
+      <div class="midi-drums__wizard-step" data-role="wizard-intro" hidden>
+        <p class="midi-drums__wizard-text">
+          The wizard will walk through each drum piece used in the loaded song. Hit
+          your trigger for each piece to assign it.
+        </p>
+        <div class="midi-drums__wizard-actions">
+          <button type="button" class="midi-drums__button" data-role="wizard-begin">
+            Begin
+          </button>
+        </div>
+      </div>
+
+      <div class="midi-drums__wizard-step" data-role="wizard-awaiting" hidden>
+        <p class="midi-drums__wizard-text">
+          Hit your <strong data-role="wizard-piece"></strong>
+        </p>
+        <p class="midi-drums__hint" data-role="wizard-remaining"></p>
+        <div class="midi-drums__wizard-actions">
+          <button type="button" class="midi-drums__button" data-role="wizard-skip">
+            Skip this piece
+          </button>
+        </div>
+      </div>
+
+      <div class="midi-drums__wizard-step" data-role="wizard-capturing" hidden>
+        <p class="midi-drums__wizard-text">Listening for MIDI input...</p>
+        <p class="midi-drums__hint">Play a note on any open MIDI device.</p>
+      </div>
+
+      <div class="midi-drums__wizard-step" data-role="wizard-got-hit" hidden>
+        <p class="midi-drums__wizard-text">Got it!</p>
+        <p class="midi-drums__hint" data-role="wizard-hit-info"></p>
+        <div class="midi-drums__wizard-actions">
+          <button type="button" class="midi-drums__button" data-role="wizard-confirm">
+            ✓ Confirm
+          </button>
+          <button type="button" class="midi-drums__button" data-role="wizard-retry">
+            Retry
+          </button>
+        </div>
+      </div>
+
+      <div class="midi-drums__wizard-step" data-role="wizard-confirmed" hidden>
+        <p class="midi-drums__wizard-text">Mapped successfully!</p>
+        <div class="midi-drums__wizard-actions">
+          <button type="button" class="midi-drums__button" data-role="wizard-next">
+            Next
+          </button>
+        </div>
+      </div>
+
+      <div class="midi-drums__wizard-step" data-role="wizard-complete" hidden>
+        <p class="midi-drums__wizard-text">Calibration complete!</p>
+        <p class="midi-drums__hint">All required pieces have been mapped.</p>
+        <div class="midi-drums__wizard-actions">
+          <button type="button" class="midi-drums__button" data-role="wizard-done">
+            Done
+          </button>
+        </div>
+      </div>
+
+      <div class="midi-drums__wizard-step" data-role="wizard-no-devices" hidden>
+        <p class="midi-drums__wizard-text">No MIDI devices connected/open.</p>
+        <p class="midi-drums__hint">Tick devices in the "Trigger devices" section above.</p>
+      </div>
+    </div>
+
+    <div class="midi-drums__mappings" data-role="mappings">
+      <h4 class="midi-drums__subheading">Current mappings</h4>
+      <ul class="midi-drums__mapping-list" data-role="mapping-list"></ul>
+      <p class="midi-drums__empty" data-role="mapping-empty">No mappings yet.</p>
+    </div>
+  </section>
+
+  <section class="midi-drums__panel">
+    <div class="midi-drums__panel-head">
       <h3 class="midi-drums__panel-title">Incoming hits</h3>
       <span class="midi-drums__counter" data-role="hit-count">0</span>
     </div>

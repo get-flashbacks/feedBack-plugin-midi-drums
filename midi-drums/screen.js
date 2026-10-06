@@ -30,6 +30,24 @@
     const MAX_SOURCES = 8;
     const MAX_SOURCE_KEY_LEN = 200;
     const MAX_HIT_ROWS = 12;
+    // Common drum piece IDs (as referenced in the host's drum tab)
+    const PIECES = {
+        kick: { name: 'Kick' },
+        snare: { name: 'Snare' },
+        hh_closed: { name: 'Hi-Hat Closed' },
+        hh_open: { name: 'Hi-Hat Open' },
+        crash: { name: 'Crash' },
+        ride: { name: 'Ride' },
+        tom1: { name: 'Tom 1' },
+        tom2: { name: 'Tom 2' },
+        tom3: { name: 'Tom 3' },
+        floor_tom: { name: 'Floor Tom' },
+        rim: { name: 'Rim Shot' },
+        clap: { name: 'Clap' },
+        cowbell: { name: 'Cowbell' },
+        crash2: { name: 'Crash 2' },
+        ride2: { name: 'Ride 2' },
+    };
 
     // ── domain access ──────────────────────────────────────────────────────
 
@@ -74,6 +92,11 @@
         const hitListeners = new Set();
         const stateListeners = new Set();
         const activateListeners = new Set();
+        const drumTabListeners = new Set();
+        let activeKit = 'default';
+        let kitProfiles = {};
+        let currentDrumTab = null;
+        let wizardState = null; // { phase, currentPiece, pendingPieces, captures, capturing }
 
         function nextGeneration(key) {
             const next = (generations.get(key) || 0) + 1;
@@ -97,6 +120,10 @@
                 sources: mi ? listSources() : [],
                 openKeys: Array.from(sessions.keys()),
                 savedKeys: savedKeys.slice(),
+                activeKit,
+                kitProfiles: kitProfiles,
+                currentDrumTab,
+                wizard: wizardState ? { ...wizardState } : null,
             };
         }
 
@@ -314,6 +341,77 @@
             hitListeners.forEach((fn) => {
                 try { fn(hit); } catch (_) { /* listener isolation */ }
             });
+            // Handle wizard capture
+            if (wizardState && wizardState.phase === 'capturing') {
+                wizardState = {
+                    ...wizardState,
+                    phase: 'gotHit',
+                    lastHit: hit,
+                };
+                emitState();
+            }
+        }
+
+        function confirmWizardHit() {
+            if (!wizardState || !wizardState.lastHit || !wizardState.currentPiece) return;
+            const mapping = {
+                note: wizardState.lastHit.note,
+                channel: wizardState.lastHit.channel,
+                logicalSourceKey: wizardState.lastHit.logicalSourceKey,
+            };
+            const conflict = findConflictingMapping(wizardState.currentPiece, mapping);
+            if (conflict && !wizardState.warnedAmbiguous) {
+                wizardState = {
+                    ...wizardState,
+                    phase: 'gotHit',
+                    conflict,
+                    warnedAmbiguous: true,
+                };
+                emitState();
+                return;
+            }
+            setKitMapping(wizardState.currentPiece, mapping);
+            wizardState = {
+                ...wizardState,
+                phase: 'confirmed',
+                captures: { ...wizardState.captures, [wizardState.currentPiece]: mapping },
+                conflict: null,
+            };
+            emitState();
+        }
+
+        function retryWizardHit() {
+            if (!wizardState) return;
+            wizardState = {
+                ...wizardState,
+                phase: 'capturing',
+                lastHit: null,
+                error: null,
+            };
+            emitState();
+        }
+
+        function startCapturing() {
+            if (!wizardState) return;
+            // Check if any devices are open
+            const state = getState();
+            if (state.openKeys.length === 0) {
+                wizardState = {
+                    ...wizardState,
+                    phase: 'no-devices',
+                    lastHit: null,
+                    error: 'No MIDI devices open',
+                };
+                emitState();
+                return;
+            }
+            wizardState = {
+                ...wizardState,
+                phase: 'capturing',
+                lastHit: null,
+                error: null,
+            };
+            emitState();
         }
 
         // ── replug / unplug ──────────────────────────────────────────────────
@@ -381,11 +479,26 @@
                         // can't turn every save into a rejected POST.
                         .map((key) => key.slice(0, MAX_SOURCE_KEY_LEN));
                 }
+                if (settings.active_kit) activeKit = settings.active_kit;
+                if (settings.kit_profiles) kitProfiles = settings.kit_profiles;
             } catch (err) {
-                console.warn(`${PLUGIN_ID}: could not load the saved device selection`, err);
+                console.warn(`${PLUGIN_ID}: could not load the saved settings`, err);
             }
             keysLoaded = true;
             emitState();
+        }
+
+        async function saveKitProfiles() {
+            try {
+                const res = await fetch(`/api/plugins/${PLUGIN_ID}/kit-profiles`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ active_kit: activeKit, kit_profiles: kitProfiles }),
+                });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            } catch (err) {
+                console.warn(`${PLUGIN_ID}: could not save kit profiles`, err);
+            }
         }
 
         async function setEnabled(key, enabled) {
@@ -416,6 +529,129 @@
             syncPrimarySelection();
             emitState();
             return true;
+        }
+
+        // ── kit profile / wizard ──────────────────────────────────────────────
+
+        function getPieceDisplayName(pieceId) {
+            if (PIECES[pieceId] && PIECES[pieceId].name) return PIECES[pieceId].name;
+            // Title-case fallback
+            return pieceId.replace(/_/g, ' ').replace(/\w\S*/g, (w) => w.charAt(0).toUpperCase() + w.substr(1).toLowerCase());
+        }
+
+        function getActiveKitProfile() {
+            if (!kitProfiles[activeKit]) kitProfiles[activeKit] = {};
+            return kitProfiles[activeKit];
+        }
+
+        function setKitMapping(pieceId, mapping) {
+            const profile = getActiveKitProfile();
+            profile[pieceId] = mapping;
+            saveKitProfiles().catch(() => {});
+            emitState();
+        }
+
+        function findConflictingMapping(pieceId, mapping) {
+            const profile = getActiveKitProfile();
+            for (const pid of Object.keys(profile)) {
+                if (pid === pieceId) continue;
+                const m = profile[pid];
+                if (m && m.logicalSourceKey === mapping.logicalSourceKey && m.note === mapping.note && m.channel === mapping.channel) {
+                    return pid;
+                }
+            }
+            return null;
+        }
+
+        function clearKitMapping(pieceId) {
+            const profile = getActiveKitProfile();
+            if (profile[pieceId]) {
+                delete profile[pieceId];
+                saveKitProfiles().catch(() => {});
+                emitState();
+            }
+        }
+
+        function resolveKitPiecesFromDrumTab(drumTab) {
+            const pieces = new Set();
+            if (drumTab && Array.isArray(drumTab.kit)) {
+                for (const item of drumTab.kit) {
+                    if (item && typeof item.piece === 'string') pieces.add(item.piece);
+                    else if (item && typeof item.id === 'string') pieces.add(item.id);
+                }
+            }
+            return Array.from(pieces);
+        }
+
+        function startWizard() {
+            const profile = getActiveKitProfile();
+            const requiredPieces = resolveKitPiecesFromDrumTab(currentDrumTab);
+            const pendingPieces = requiredPieces.filter((p) => !profile[p]);
+            wizardState = {
+                phase: 'intro',
+                currentPiece: pendingPieces[0] || null,
+                pendingPieces: pendingPieces.slice(),
+                remainingPieces: pendingPieces.slice(),
+                captures: {},
+                capturing: false,
+                error: null,
+                warnedAmbiguous: false,
+            };
+            emitState();
+        }
+
+        function resetWizard() {
+            wizardState = null;
+            emitState();
+        }
+
+        function advanceWizard() {
+            if (!wizardState) return;
+            const remaining = wizardState.remainingPieces.slice(1);
+            if (remaining.length === 0) {
+                wizardState = {
+                    phase: 'complete',
+                    currentPiece: null,
+                    pendingPieces: [],
+                    remainingPieces: [],
+                    captures: wizardState.captures,
+                    capturing: false,
+                    error: null,
+                };
+            } else {
+                wizardState = {
+                    ...wizardState,
+                    phase: 'awaiting',
+                    currentPiece: remaining[0],
+                    remainingPieces: remaining,
+                    capturing: false,
+                    error: null,
+                };
+            }
+            emitState();
+        }
+
+        function skipCurrentPiece() {
+            if (!wizardState || !wizardState.currentPiece) return;
+            advanceWizard();
+        }
+
+        function remapPiece(pieceId) {
+            if (!pieceId) return;
+            const profile = getActiveKitProfile();
+            const isMapped = !!profile[pieceId];
+            wizardState = {
+                phase: 'awaiting',
+                currentPiece: pieceId,
+                pendingPieces: [pieceId],
+                remainingPieces: [pieceId],
+                captures: {},
+                capturing: false,
+                error: null,
+                isRemap: true,
+                wasMapped: isMapped,
+            };
+            emitState();
         }
 
         // ── screen lifecycle ─────────────────────────────────────────────────
@@ -501,6 +737,30 @@
                 if (typeof fn === 'function') activateListeners.add(fn);
                 return () => activateListeners.delete(fn);
             },
+            // Drum tab / wizard API
+            setCurrentDrumTab(drumTab) {
+                currentDrumTab = drumTab;
+                emitState();
+            },
+            onDrumTabChanged(fn) {
+                if (typeof fn === 'function') drumTabListeners.add(fn);
+                return () => drumTabListeners.delete(fn);
+            },
+            startWizard,
+            resetWizard,
+            advanceWizard,
+            skipCurrentPiece,
+            remapPiece,
+            startCapturing,
+            confirmWizardHit,
+            retryWizardHit,
+            clearKitMapping,
+            setActiveKit(kit) {
+                activeKit = kit || 'default';
+                saveKitProfiles().catch(() => {});
+                emitState();
+            },
+            getPieceDisplayName,
         };
     }
 
@@ -600,6 +860,34 @@
         const hitsEmptyEl = root.querySelector('[data-role="hit-empty"]');
         const hitCountEl = root.querySelector('[data-role="hit-count"]');
 
+        // Wizard elements
+        const wizardStartBtn = root.querySelector('[data-role="wizard-start"]');
+        const wizardResetBtn = root.querySelector('[data-role="wizard-reset"]');
+        const wizardEl = root.querySelector('[data-role="wizard"]');
+        const drumtabHintEl = root.querySelector('[data-role="drumtab-hint"]');
+
+        const wizardIntroEl = root.querySelector('[data-role="wizard-intro"]');
+        const wizardAwaitingEl = root.querySelector('[data-role="wizard-awaiting"]');
+        const wizardCapturingEl = root.querySelector('[data-role="wizard-capturing"]');
+        const wizardGotHitEl = root.querySelector('[data-role="wizard-got-hit"]');
+        const wizardConfirmedEl = root.querySelector('[data-role="wizard-confirmed"]');
+        const wizardCompleteEl = root.querySelector('[data-role="wizard-complete"]');
+        const wizardNoDevicesEl = root.querySelector('[data-role="wizard-no-devices"]');
+
+        const wizardPieceEl = root.querySelector('[data-role="wizard-piece"]');
+        const wizardRemainingEl = root.querySelector('[data-role="wizard-remaining"]');
+        const wizardHitInfoEl = root.querySelector('[data-role="wizard-hit-info"]');
+
+        const wizardBeginBtn = root.querySelector('[data-role="wizard-begin"]');
+        const wizardSkipBtn = root.querySelector('[data-role="wizard-skip"]');
+        const wizardConfirmBtn = root.querySelector('[data-role="wizard-confirm"]');
+        const wizardRetryBtn = root.querySelector('[data-role="wizard-retry"]');
+        const wizardNextBtn = root.querySelector('[data-role="wizard-next"]');
+        const wizardDoneBtn = root.querySelector('[data-role="wizard-done"]');
+
+        const mappingListEl = root.querySelector('[data-role="mapping-list"]');
+        const mappingEmptyEl = root.querySelector('[data-role="mapping-empty"]');
+
         // The hit log is a capped FIFO: one row per hit, newest first, oldest
         // dropped. Rows are built on the hit path (a drum roll is a handful of
         // events per second, not a per-frame render), but the element count
@@ -624,6 +912,10 @@
                 savedEl.textContent = hint;
                 savedEl.hidden = !hint;
             }
+
+            // Wizard UI updates
+            renderWizard(state);
+            renderMappings(state);
         };
 
         const onHit = (hit) => {
@@ -643,6 +935,122 @@
         // A rescan is also the retry for a denied prompt, so it re-runs
         // discovery even after a successful one — and restore() follows, which
         // picks up a saved device that has since been plugged back in.
+        function renderMappings(state) {
+            if (!mappingListEl || !mappingEmptyEl) return;
+            mappingListEl.textContent = '';
+            const profile = state.kitProfiles && state.kitProfiles[state.activeKit];
+            const mappings = profile ? Object.keys(profile) : [];
+            if (mappings.length === 0) {
+                mappingEmptyEl.hidden = false;
+                return;
+            }
+            mappingEmptyEl.hidden = true;
+            for (const pieceId of mappings.sort()) {
+                const m = profile[pieceId];
+                const li = document.createElement('li');
+                li.className = 'midi-drums__mapping';
+                const info = document.createElement('div');
+                info.className = 'midi-drums__mapping-info';
+                const pieceEl = document.createElement('div');
+                pieceEl.className = 'midi-drums__mapping-piece';
+                pieceEl.textContent = layer.getPieceDisplayName(pieceId);
+                const triggerEl = document.createElement('div');
+                triggerEl.className = 'midi-drums__mapping-trigger';
+                const devLabel = labels.get(m.logicalSourceKey) || m.logicalSourceKey;
+                triggerEl.textContent = `${devLabel} — note ${m.note}, ch ${m.channel + 1}`;
+                info.appendChild(pieceEl);
+                info.appendChild(triggerEl);
+                const actions = document.createElement('div');
+                actions.className = 'midi-drums__mapping-actions';
+                const remapBtn = document.createElement('button');
+                remapBtn.type = 'button';
+                remapBtn.className = 'midi-drums__button';
+                remapBtn.textContent = 'Remap';
+                remapBtn.addEventListener('click', () => layer.remapPiece(pieceId));
+                const clearBtn = document.createElement('button');
+                clearBtn.type = 'button';
+                clearBtn.className = 'midi-drums__button';
+                clearBtn.textContent = 'Clear';
+                clearBtn.addEventListener('click', () => layer.clearKitMapping(pieceId));
+                actions.appendChild(remapBtn);
+                actions.appendChild(clearBtn);
+                li.appendChild(info);
+                li.appendChild(actions);
+                mappingListEl.appendChild(li);
+            }
+        }
+
+        function renderWizard(state) {
+            if (!wizardEl || !drumtabHintEl || !wizardStartBtn || !wizardResetBtn) return;
+
+            const hasDrumTab = state.currentDrumTab && Array.isArray(state.currentDrumTab.kit);
+            const profile = state.kitProfiles && state.kitProfiles[state.activeKit];
+            const requiredPieces = hasDrumTab
+                ? (state.currentDrumTab.kit || [])
+                    .map((item) => item && (item.piece || item.id))
+                    .filter((x) => typeof x === 'string')
+                : [];
+            // Unique
+            const uniqueRequired = Array.from(new Set(requiredPieces));
+            const pendingCount = uniqueRequired.filter((p) => !(profile && profile[p])).length;
+
+            if (wizardStartBtn) wizardStartBtn.disabled = !hasDrumTab || pendingCount === 0;
+            if (wizardResetBtn) wizardResetBtn.disabled = !state.wizard;
+
+            if (drumtabHintEl) {
+                if (!hasDrumTab) {
+                    drumtabHintEl.textContent = 'Waiting for a loaded song/drum chart to determine which pieces to calibrate.';
+                    drumtabHintEl.hidden = false;
+                } else if (pendingCount === 0) {
+                    drumtabHintEl.textContent = `All ${uniqueRequired.length} required piece${uniqueRequired.length === 1 ? '' : 's'} are already mapped.`;
+                    drumtabHintEl.hidden = false;
+                } else {
+                    drumtabHintEl.hidden = true;
+                }
+            }
+
+            if (!state.wizard) {
+                wizardEl.hidden = true;
+                return;
+            }
+            wizardEl.hidden = false;
+
+            // Hide all steps
+            if (wizardIntroEl) wizardIntroEl.hidden = true;
+            if (wizardAwaitingEl) wizardAwaitingEl.hidden = true;
+            if (wizardCapturingEl) wizardCapturingEl.hidden = true;
+            if (wizardGotHitEl) wizardGotHitEl.hidden = true;
+            if (wizardConfirmedEl) wizardConfirmedEl.hidden = true;
+            if (wizardCompleteEl) wizardCompleteEl.hidden = true;
+            if (wizardNoDevicesEl) wizardNoDevicesEl.hidden = true;
+
+            const phase = state.wizard.phase;
+            if (phase === 'intro' && wizardIntroEl) wizardIntroEl.hidden = false;
+            if (phase === 'awaiting' && wizardAwaitingEl) {
+                wizardAwaitingEl.hidden = false;
+                if (wizardPieceEl && state.wizard.currentPiece) wizardPieceEl.textContent = layer.getPieceDisplayName(state.wizard.currentPiece);
+                if (wizardRemainingEl) {
+                    const rem = state.wizard.remainingPieces ? state.wizard.remainingPieces.length : 0;
+                    wizardRemainingEl.textContent = rem === 1 ? '1 piece remaining' : `${rem} pieces remaining`;
+                }
+            }
+            if (phase === 'capturing' && wizardCapturingEl) wizardCapturingEl.hidden = false;
+            if (phase === 'gotHit' && wizardGotHitEl) {
+                wizardGotHitEl.hidden = false;
+                if (wizardHitInfoEl && state.wizard.lastHit) {
+                    const h = state.wizard.lastHit;
+                    const devLabel = labels.get(h.logicalSourceKey) || h.logicalSourceKey;
+                    let text = `${devLabel} — note ${h.note}, velocity ${h.velocity}, ch ${h.channel + 1}`;
+                    if (state.wizard.conflict) {
+                        text += ` (Warning: same trigger also mapped to ${layer.getPieceDisplayName(state.wizard.conflict)})`;
+                    }
+                    wizardHitInfoEl.textContent = text;
+                }
+            }
+            if (phase === 'confirmed' && wizardConfirmedEl) wizardConfirmedEl.hidden = false;
+            if (phase === 'complete' && wizardCompleteEl) wizardCompleteEl.hidden = false;
+        }
+
         const onRescan = () => { layer.discover({ force: true }).catch(() => {}); };
 
         // `screen:changing` is best-effort, not a spec guarantee: it lets us release
@@ -671,6 +1079,16 @@
         const unsubscribeState = layer.subscribe(onState);
         const unsubscribeHit = layer.onHit(onHit);
         if (rescanBtn) rescanBtn.addEventListener('click', onRescan);
+
+        // Wizard button handlers
+        if (wizardStartBtn) wizardStartBtn.addEventListener('click', () => layer.startWizard());
+        if (wizardResetBtn) wizardResetBtn.addEventListener('click', () => layer.resetWizard());
+        if (wizardBeginBtn) wizardBeginBtn.addEventListener('click', () => layer.startCapturing());
+        if (wizardSkipBtn) wizardSkipBtn.addEventListener('click', () => layer.skipCurrentPiece());
+        if (wizardConfirmBtn) wizardConfirmBtn.addEventListener('click', () => layer.confirmWizardHit());
+        if (wizardRetryBtn) wizardRetryBtn.addEventListener('click', () => layer.retryWizardHit());
+        if (wizardNextBtn) wizardNextBtn.addEventListener('click', () => layer.advanceWizard());
+        if (wizardDoneBtn) wizardDoneBtn.addEventListener('click', () => layer.resetWizard());
 
         // Retryable for the same reason as the layer's own bus subscription: the
         // screen lifecycle events are what wake this screen back up, so losing
