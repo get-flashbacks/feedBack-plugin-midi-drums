@@ -96,7 +96,17 @@
         let activeKit = 'default';
         let kitProfiles = {};
         let currentDrumTab = null;
+        let currentDrumHits = null;
+        let currentDrumPart = null;
         let wizardState = null; // { phase, currentPiece, pendingPieces, captures, capturing }
+        let noteStateProvider = null;
+        let lastNoteState = null;
+        let scoreState = {
+            hits: 0,
+            misses: 0,
+            total: 0,
+            accuracy: 0,
+        };
 
         function nextGeneration(key) {
             const next = (generations.get(key) || 0) + 1;
@@ -123,6 +133,9 @@
                 activeKit,
                 kitProfiles: kitProfiles,
                 currentDrumTab,
+                currentDrumHits,
+                currentDrumPart,
+                scoreState: { ...scoreState },
                 wizard: wizardState ? { ...wizardState } : null,
             };
         }
@@ -350,6 +363,10 @@
                 };
                 emitState();
             }
+            // Handle scoring for live hits
+            handleHitForScoring(hit);
+            // Update note state provider if registered
+            updateNoteStateForHit(hit);
         }
 
         function confirmWizardHit() {
@@ -631,6 +648,93 @@
             emitState();
         }
 
+        // ── scoring and hit matching ──────────────────────────────────────────
+        function findPieceForHit(hit) {
+            const profile = getActiveKitProfile();
+            for (const pieceId of Object.keys(profile)) {
+                const mapping = profile[pieceId];
+                if (mapping &&
+                    mapping.logicalSourceKey === hit.logicalSourceKey &&
+                    mapping.note === hit.note &&
+                    mapping.channel === hit.channel) {
+                    return pieceId;
+                }
+            }
+            return null;
+        }
+
+        function handleHitForScoring(hit) {
+            const pieceId = findPieceForHit(hit);
+            if (!pieceId) return;
+            // For now, just count hits - full matching against chart timing
+            // would require comparing against currentDrumHits array with timing
+            scoreState.hits += 1;
+            scoreState.total = scoreState.hits + scoreState.misses;
+            if (scoreState.total > 0) {
+                scoreState.accuracy = Math.round((scoreState.hits / scoreState.total) * 100);
+            }
+            emitState();
+        }
+
+        function resetScore() {
+            scoreState = {
+                hits: 0,
+                misses: 0,
+                total: 0,
+                accuracy: 0,
+            };
+            emitState();
+        }
+
+        // ── note state provider (highway integration) ─────────────────────────
+        function setNoteStateProvider(provider) {
+            noteStateProvider = provider;
+            lastNoteState = null;
+        }
+
+        // Expose the provider setter globally and also register with highway if available
+        function registerWithHighway() {
+            try {
+                const hw = (window.feedBack && window.feedBack.highway) || window.highway;
+                if (hw && typeof hw.setNoteStateProvider === 'function') {
+                    hw.setNoteStateProvider({
+                        setNoteState: (note, state, velocity) => {
+                            if (noteStateProvider && typeof noteStateProvider.setNoteState === 'function') {
+                                noteStateProvider.setNoteState(note, state, velocity);
+                            }
+                        },
+                        clear: () => {
+                            if (noteStateProvider && typeof noteStateProvider.clear === 'function') {
+                                noteStateProvider.clear();
+                            }
+                        },
+                    });
+                }
+            } catch (err) {
+                console.warn(`${PLUGIN_ID}: could not register with highway`, err);
+            }
+        }
+
+        function clearNoteStateProvider() {
+            noteStateProvider = null;
+            lastNoteState = null;
+        }
+
+        function updateNoteStateForHit(hit) {
+            const pieceId = findPieceForHit(hit);
+            if (!pieceId || !noteStateProvider || typeof noteStateProvider.setNoteState !== 'function') {
+                return;
+            }
+            try {
+                // Map to note index as expected by the provider
+                // The provider typically takes (noteIndex, state, velocity)
+                noteStateProvider.setNoteState(pieceId, true, hit.velocity / 127);
+                // Clear after a short duration if needed - but the provider manages timing
+            } catch (err) {
+                console.warn(`${PLUGIN_ID}: note state provider error`, err);
+            }
+        }
+
         function skipCurrentPiece() {
             if (!wizardState || !wizardState.currentPiece) return;
             advanceWizard();
@@ -741,6 +845,20 @@
             setCurrentDrumTab(drumTab) {
                 currentDrumTab = drumTab;
                 emitState();
+            },
+            setCurrentDrumHits(hits) {
+                currentDrumHits = hits;
+                emitState();
+            },
+            setCurrentDrumPart(part) {
+                currentDrumPart = part;
+                emitState();
+            },
+            setNoteStateProvider,
+            clearNoteStateProvider,
+            resetScore,
+            getScoreState() {
+                return { ...scoreState };
             },
             onDrumTabChanged(fn) {
                 if (typeof fn === 'function') drumTabListeners.add(fn);
@@ -859,6 +977,8 @@
         const hitsEl = root.querySelector('[data-role="hits"]');
         const hitsEmptyEl = root.querySelector('[data-role="hit-empty"]');
         const hitCountEl = root.querySelector('[data-role="hit-count"]');
+        const scoreHitsEl = root.querySelector('[data-role="score-hits"]');
+        const scoreAccuracyEl = root.querySelector('[data-role="score-accuracy"]');
 
         // Wizard elements
         const wizardStartBtn = root.querySelector('[data-role="wizard-start"]');
@@ -911,6 +1031,14 @@
                 const hint = savedHint(state);
                 savedEl.textContent = hint;
                 savedEl.hidden = !hint;
+            }
+
+            // Score display
+            if (scoreHitsEl) {
+                scoreHitsEl.textContent = `${state.scoreState.hits}/${state.scoreState.total}`;
+            }
+            if (scoreAccuracyEl) {
+                scoreAccuracyEl.textContent = `${state.scoreState.accuracy}%`;
             }
 
             // Wizard UI updates
@@ -1071,6 +1199,18 @@
             if (id === null) layer.setActive(root.classList.contains('active'));
             else layer.setActive(id === SCREEN_ID);
         };
+        const onDrumTab = (ev) => {
+            const data = (ev && (ev.detail || ev.data)) || ev;
+            layer.setCurrentDrumTab(data);
+        };
+        const onDrumHits = (ev) => {
+            const data = (ev && (ev.detail || ev.data)) || ev;
+            layer.setCurrentDrumHits(data);
+        };
+        const onDrumPart = (ev) => {
+            const data = (ev && (ev.detail || ev.data)) || ev;
+            layer.setCurrentDrumPart(data);
+        };
         // A full page load is the other exit path. `pageshow` re-syncs so a
         // tab restored from bfcache resumes instead of sitting inactive.
         const onPageHide = () => layer.setActive(false);
@@ -1104,6 +1244,12 @@
             busBound = true;
             bus.on('screen:changing', onScreenChanging);
             bus.on('screen:changed', onScreenChanged);
+            // Listen for drum chart/tab events
+            bus.on('drum-tab', onDrumTab);
+            bus.on('drum_tab', onDrumTab);
+            bus.on('drum-hits', onDrumHits);
+            bus.on('drum_hits', onDrumHits);
+            bus.on('drum-part', onDrumPart);
         }
         bindBus();
         const unbindActivation = layer.addActivateListener(bindBus);
@@ -1112,6 +1258,7 @@
         window.addEventListener('pageshow', onPageShow);
 
         onState(layer.getState());
+        registerWithHighway();
 
         return {
             dispose() {
@@ -1122,6 +1269,11 @@
                 if (busBound && bus && typeof bus.off === 'function') {
                     bus.off('screen:changing', onScreenChanging);
                     bus.off('screen:changed', onScreenChanged);
+                    bus.off('drum-tab', onDrumTab);
+                    bus.off('drum_tab', onDrumTab);
+                    bus.off('drum-hits', onDrumHits);
+                    bus.off('drum_hits', onDrumHits);
+                    bus.off('drum-part', onDrumPart);
                 }
                 window.removeEventListener('pagehide', onPageHide);
                 window.removeEventListener('pageshow', onPageShow);
