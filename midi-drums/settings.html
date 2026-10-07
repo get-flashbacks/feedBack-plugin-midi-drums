@@ -73,6 +73,10 @@
       "ride", "ride_bell", "bell"
     ];
     var REMAP_SCREEN = "plugin-midi-drums";
+    // Reserved Object.prototype names, matching routes.py: assigning one as a
+    // key hits the setter instead of creating a profile, so the POST would
+    // report "Saved." for a profile that was never sent.
+    var RESERVED_PROFILE_NAMES = ["__proto__", "constructor", "prototype"];
 
     var panel = document.querySelector(".midi-drums-settings");
     if (!panel) return;
@@ -258,6 +262,10 @@
         if (!next) return;
         var clean = String(next).trim().replace(/\s+/g, " ").slice(0, 99);
         if (!clean || clean === name) return;
+        if (RESERVED_PROFILE_NAMES.indexOf(clean) !== -1) {
+          setStatus("\"" + clean + "\" is a reserved name.");
+          return;
+        }
         if (Object.prototype.hasOwnProperty.call(data.kit_profiles, clean)) {
           setStatus("A profile named \"" + clean + "\" already exists.");
           return;
@@ -346,6 +354,10 @@
         var name = newNameEl ? String(newNameEl.value).trim().replace(/\s+/g, " ").slice(0, 99) : "";
         if (!name) {
           setStatus("A profile name is required.");
+          return;
+        }
+        if (RESERVED_PROFILE_NAMES.indexOf(name) !== -1) {
+          setStatus("\"" + name + "\" is a reserved name.");
           return;
         }
         if (Object.prototype.hasOwnProperty.call(data.kit_profiles, name)) {
