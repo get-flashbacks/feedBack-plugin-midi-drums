@@ -116,6 +116,20 @@
       }
     }
 
+    // Refetch when the panel becomes visible (e.g. user switches to Settings tab).
+    // The Host injects the panel once per session; without this, stale data
+    // would persist across tab switches.
+    var fetchPending = false;
+    var observer = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (entry.isIntersecting && !fetchPending) {
+          fetchPending = true;
+          fetchProfiles().finally(function () { fetchPending = false; });
+        }
+      });
+    }, { root: null, threshold: 0.1 });
+    observer.observe(panel);
+
     // One persistence path: replace the whole document through the profile
     // route, re-render locally only on success. The server stays the source
     // of truth; a failed POST leaves the panel (and server) consistent.
