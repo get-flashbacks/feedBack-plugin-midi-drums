@@ -82,7 +82,14 @@ def _is_valid_setting(name: str, value: object) -> bool:
         # this only rejects a hand-edited file, which _read() then salvages.
         return len(set(value)) == len(value)
     if name == "active_kit":
-        return isinstance(value, str) and 0 < len(value) < MAX_PROFILE_NAME_LEN
+        # Reserved keys are rejected here too — `active_kit` is the slot the
+        # client reads first, so a hand-edited `__proto__` would shadow the
+        # default on the next read rather than failing loudly.
+        return (
+            isinstance(value, str)
+            and 0 < len(value) <= MAX_PROFILE_NAME_LEN
+            and value not in _RESERVED_KEYS
+        )
     if name == "kit_profiles":
         if not isinstance(value, dict) or len(value) > MAX_KIT_PROFILES:
             return False
@@ -109,7 +116,7 @@ def _is_valid_setting(name: str, value: object) -> bool:
         # enough: bounded key, bounded string.
         return all(
             type(stamp_key) is str
-            and 0 < len(stamp_key) < MAX_PROFILE_NAME_LEN
+            and 0 < len(stamp_key) <= MAX_PROFILE_NAME_LEN
             and stamp_key not in _RESERVED_KEYS
             and type(stamp) is str
             and 0 < len(stamp) <= 40
@@ -255,7 +262,7 @@ def setup(app: FastAPI, context: dict) -> None:
         for profile_name, stamp in value.items():
             if profile_name in _RESERVED_KEYS:
                 continue
-            if type(profile_name) is not str or not profile_name or len(profile_name) >= MAX_PROFILE_NAME_LEN:
+            if type(profile_name) is not str or not profile_name or len(profile_name) > MAX_PROFILE_NAME_LEN:
                 continue
             if type(stamp) is not str or not stamp or len(stamp) > 40:
                 continue
@@ -309,7 +316,7 @@ def setup(app: FastAPI, context: dict) -> None:
                 settings[key] = _sanitise_song_overrides(value)
             elif key == "active_kit":
                 if isinstance(value, str) and value:
-                    settings[key] = value[:MAX_PROFILE_NAME_LEN - 1]
+                    settings[key] = value[:MAX_PROFILE_NAME_LEN]
                 else:
                     settings[key] = "default"
         # An active profile that was lost to salvage (or a hand edit) falls

@@ -616,7 +616,11 @@
         }
 
         function normalizeProfileName(name) {
-            return String(name || '').trim().replace(/\s+/g, ' ').slice(0, 99);
+            // Server is the authority: routes.py rejects names of
+            // MAX_PROFILE_NAME_LEN (100) or more, so a 100-char name must
+            // survive round-trip here too — the settings panel can create
+            // one and this screen must still be able to select it.
+            return String(name || '').trim().replace(/\s+/g, ' ').slice(0, 100);
         }
 
         // Reserved Object.prototype names — routes.py rejects them on write,
