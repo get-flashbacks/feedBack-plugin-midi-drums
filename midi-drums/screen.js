@@ -619,6 +619,19 @@
             return String(name || '').trim().replace(/\s+/g, ' ').slice(0, 99);
         }
 
+        // Reserved Object.prototype names — routes.py rejects them on write,
+        // and assigning one as a key would hit the setter instead of creating
+        // a profile (the save then reports success for a profile that was
+        // never sent).
+        const RESERVED_PROFILE_NAMES = ['__proto__', 'constructor', 'prototype'];
+
+        // Own-property test: a bare `kitProfiles[name]` read is truthy for
+        // inherited names like `toString`, which would claim a profile exists
+        // when it does not.
+        function hasProfile(name) {
+            return Object.prototype.hasOwnProperty.call(kitProfiles, name);
+        }
+
         function getActiveKitProfile() {
             if (!kitProfiles[activeKit]) kitProfiles[activeKit] = {};
             return kitProfiles[activeKit];
@@ -641,7 +654,8 @@
         function createKitProfile(name) {
             const nameClean = normalizeProfileName(name);
             if (!nameClean) return { ok: false, error: 'A profile name is required.' };
-            if (kitProfiles[nameClean]) return { ok: false, error: `"${nameClean}" already exists.` };
+            if (RESERVED_PROFILE_NAMES.includes(nameClean)) return { ok: false, error: `"${nameClean}" is a reserved name.` };
+            if (hasProfile(nameClean)) return { ok: false, error: `"${nameClean}" already exists.` };
             kitProfiles[nameClean] = {};
             stampProfile(nameClean);
             activeKit = nameClean;
@@ -652,9 +666,10 @@
 
         function renameKitProfile(oldName, nextName) {
             const nameClean = normalizeProfileName(nextName);
-            if (!kitProfiles[oldName]) return { ok: false, error: `"${oldName}" is not a saved profile.` };
+            if (!hasProfile(oldName)) return { ok: false, error: `"${oldName}" is not a saved profile.` };
             if (!nameClean) return { ok: false, error: 'A profile name is required.' };
-            if (nameClean !== oldName && kitProfiles[nameClean]) {
+            if (RESERVED_PROFILE_NAMES.includes(nameClean)) return { ok: false, error: `"${nameClean}" is a reserved name.` };
+            if (nameClean !== oldName && hasProfile(nameClean)) {
                 return { ok: false, error: `"${nameClean}" already exists.` };
             }
             kitProfiles[nameClean] = kitProfiles[oldName];
@@ -669,22 +684,26 @@
         }
 
         function deleteKitProfile(name) {
-            if (!kitProfiles[name]) return { ok: false, error: `"${name}" is not a saved profile.` };
+            if (!hasProfile(name)) return { ok: false, error: `"${name}" is not a saved profile.` };
             delete kitProfiles[name];
             delete kitUpdatedAt[name];
             // Deleting the active profile falls back to the default rather
             // than leaving the plugin pointing at nothing — getActiveKitProfile()
             // recreates an empty `default` on the next access and saveNow()
-            // persists that shape.
-            if (activeKit === name) activeKit = 'default';
-            scoreResetForProfileChange();
+            // persists that shape. Scoring resets only on that fallback: an
+            // unrelated delete leaves the active mapping (the only one hit
+            // scoring consults) untouched, so its judgments still stand.
+            if (activeKit === name) {
+                activeKit = 'default';
+                scoreResetForProfileChange();
+            }
             saveNow();
             return { ok: true };
         }
 
         function setActiveKit(kit) {
             const name = normalizeProfileName(kit) || 'default';
-            if (!kitProfiles[name]) return { ok: false, error: `"${name}" is not a saved profile.` };
+            if (!hasProfile(name)) return { ok: false, error: `"${name}" is not a saved profile.` };
             if (activeKit === name) return { ok: true, name };
             activeKit = name;
             scoreResetForProfileChange();
