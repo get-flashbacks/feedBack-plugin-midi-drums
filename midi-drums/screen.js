@@ -645,6 +645,7 @@
             kitProfiles[nameClean] = {};
             stampProfile(nameClean);
             activeKit = nameClean;
+            scoreResetForProfileChange();
             saveNow();
             return { ok: true, name: nameClean };
         }
@@ -676,6 +677,7 @@
             // recreates an empty `default` on the next access and saveNow()
             // persists that shape.
             if (activeKit === name) activeKit = 'default';
+            scoreResetForProfileChange();
             saveNow();
             return { ok: true };
         }
