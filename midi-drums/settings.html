@@ -262,7 +262,7 @@
       renameBtn.addEventListener("click", function () {
         var next = window.prompt("Rename kit profile \"" + name + "\" to:");
         if (!next) return;
-        var clean = String(next).trim().replace(/\s+/g, " ").slice(0, 99);
+        var clean = String(next).trim().replace(/\s+/g, " ").slice(0, 100);
         if (!clean || clean === name) return;
         if (RESERVED_PROFILE_NAMES.indexOf(clean) !== -1) {
           setStatus("\"" + clean + "\" is a reserved name.");
