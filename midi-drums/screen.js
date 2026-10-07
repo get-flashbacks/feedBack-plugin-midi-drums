@@ -1306,14 +1306,11 @@
                 emitState();
                 return;
             }
-            // The bus may only have appeared since the last activation.
-            if (!keysLoaded) {
-                // Serialise: the persisted selection decides what to re-open,
-                // so it has to land before discovery triggers `restore()`.
-                loadSaved().then(() => activate()).catch(() => {});
-            } else {
-                activate().catch(() => {});
-            }
+            // Always refetch persisted kit/settings state on activation so changes
+            // from the settings panel (or other sessions) are picked up. The
+            // persisted selection decides what to re-open, so it has to land
+            // before discovery triggers `restore()`.
+            loadSaved().then(() => activate()).catch(() => {});
         }
 
         async function activate() {
