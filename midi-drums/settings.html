@@ -353,7 +353,7 @@
 
     if (createBtn) {
       createBtn.addEventListener("click", async function () {
-        var name = newNameEl ? String(newNameEl.value).trim().replace(/\s+/g, " ").slice(0, 99) : "";
+        var name = newNameEl ? String(newNameEl.value).trim().replace(/\s+/g, " ").slice(0, 100) : "";
         if (!name) {
           setStatus("A profile name is required.");
           return;
