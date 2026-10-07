@@ -1,0 +1,361 @@
+<!--
+  SPDX-License-Identifier: AGPL-3.0-or-later
+  Settings panel for midi-drums.
+
+  The Host renders this markup in the plugin's settings panel, grouped under
+  the settings.category ("practice"). All styles are scoped to this panel with
+  the midi-drums-settings class prefix; all behavior lives in the inline
+  script below.
+
+  This panel is the full kit-profile management surface (issue #9): list /
+  create / rename / delete profiles, see per-profile piece coverage with
+  last-updated stamps, pick the active profile, and deep-link a single-piece
+  remap into the player screen (which reuses the #4 wizard's remap path via
+  window.feedBack nav params). It persists exclusively through the plugin's
+  own routes — settings.server_files only names the file for Host-side
+  export/import, never for direct client writes.
+
+  The script is standalone: it does not depend on the plugin screen having
+  ever been hydrated, because the settings panel renders in the Settings
+  screen where that hydration may not have happened.
+-->
+<div class="midi-drums-settings">
+  <fieldset>
+    <legend>Kit profiles</legend>
+
+    <p class="midi-drums-settings__hint">
+      A kit profile maps drum pieces to MIDI triggers. Calibration (the wizard
+      in the player screen) fills the active profile; this panel manages the
+      set of profiles, so you can keep one per e-kit, per song, or per band.
+    </p>
+
+    <div class="midi-drums-settings__create">
+      <input
+        type="text"
+        class="midi-drums-settings__input"
+        placeholder="New kit profile name"
+        maxlength="100"
+        data-role="new-name"
+        aria-label="New kit profile name"
+      />
+      <button
+        type="button"
+        class="midi-drums-settings__button"
+        data-role="create"
+      >
+        Create profile
+      </button>
+    </div>
+
+    <ul class="midi-drums-settings__list" data-role="profiles"></ul>
+
+    <p class="midi-drums-settings__empty" data-role="empty">
+      No kit profiles yet. Create one, then calibrate it from the MIDI Drums
+      screen in the player.
+    </p>
+
+    <p class="midi-drums-settings__status" data-role="status" hidden></p>
+  </fieldset>
+</div>
+
+<script>
+  (function () {
+    var PLUGIN_ID = "midi-drums";
+    // Same canonical vocabulary as screen.js / lib/drums.py. Duplicated here
+    // on purpose: the settings panel renders before the plugin screen has
+    // ever hydrated, so it cannot rely on the layer singleton.
+    var PIECES = [
+      "kick", "snare", "snare_xstick",
+      "tom_hi", "tom_mid", "tom_low", "tom_floor",
+      "hh_closed", "hh_open", "hh_pedal", "stack",
+      "crash_l", "crash_r", "splash", "china",
+      "ride", "ride_bell", "bell"
+    ];
+    var REMAP_SCREEN = "plugin-midi-drums";
+
+    var panel = document.querySelector(".midi-drums-settings");
+    if (!panel) return;
+
+    var listEl = panel.querySelector("[data-role='profiles']");
+    var emptyEl = panel.querySelector("[data-role='empty']");
+    var statusEl = panel.querySelector("[data-role='status']");
+    var newNameEl = panel.querySelector("[data-role='new-name']");
+    var createBtn = panel.querySelector("[data-role='create']");
+
+    var data = { active_kit: "default", kit_profiles: {}, kit_updated_at: {} };
+
+    function setStatus(text) {
+      if (!statusEl) return;
+      statusEl.textContent = text;
+      statusEl.hidden = !text;
+      if (text) {
+        // A status is feedback, not a second heartbeat — clear it so a stale
+        // error never reads as current.
+        setTimeout(function () {
+          if (statusEl && statusEl.textContent === text) {
+            statusEl.textContent = "";
+            statusEl.hidden = true;
+          }
+        }, 4000);
+      }
+    }
+
+    async function fetchProfiles() {
+      try {
+        var res = await fetch("/api/plugins/" + PLUGIN_ID + "/kit-profiles");
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        var settings = await res.json();
+        data.active_kit = settings.active_kit || "default";
+        data.kit_profiles = settings.kit_profiles || {};
+        data.kit_updated_at = settings.kit_updated_at || {};
+        render();
+      } catch (err) {
+        console.warn(PLUGIN_ID + ": could not load kit profiles", err);
+        setStatus("Could not load kit profiles — is the plugin server running?");
+      }
+    }
+
+    // One persistence path: replace the whole document through the profile
+    // route, re-render locally only on success. The server stays the source
+    // of truth; a failed POST leaves the panel (and server) consistent.
+    async function persist(next) {
+      try {
+        var res = await fetch("/api/plugins/" + PLUGIN_ID + "/kit-profiles", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(next),
+        });
+        if (!res.ok) {
+          var detail = "";
+          try {
+            var errBody = await res.json();
+            detail = errBody && errBody.error ? " (" + errBody.error + ")" : "";
+          } catch (_) { /* body cap/status is the only feedback we get */ }
+          throw new Error("HTTP " + res.status + detail);
+        }
+        var merged = await res.json();
+        data.active_kit = merged.active_kit || "default";
+        data.kit_profiles = merged.kit_profiles || {};
+        data.kit_updated_at = merged.kit_updated_at || {};
+        setStatus("Saved.");
+        render();
+        return true;
+      } catch (err) {
+        console.error(PLUGIN_ID + ": failed to save kit profiles", err);
+        setStatus("Save failed — " + (err && err.message ? err.message : err));
+        return false;
+      }
+    }
+
+    function pieceLabel(pieceId) {
+      // Title-case fallback, matching getPieceDisplayName in screen.js and
+      // the display conventions lib/drums.py prescribes.
+      return pieceId
+        .replace(/_/g, " ")
+        .replace(/\w\S*/g, function (w) {
+          return w.charAt(0).toUpperCase() + w.substr(1).toLowerCase();
+        });
+    }
+
+    function formatDate(iso) {
+      if (!iso) return null;
+      var t = Date.parse(iso);
+      if (Number.isNaN(t)) return null;
+      try {
+        return new Date(t).toLocaleString();
+      } catch (_) {
+        return iso;
+      }
+    }
+
+    function renderProfilesCardFor(name) {
+      var profile = data.kit_profiles[name] || {};
+      var mapped = PIECES.filter(function (pieceId) { return profile[pieceId]; });
+      var extra = Object.keys(profile).filter(function (pieceId) {
+        return PIECES.indexOf(pieceId) === -1;
+      });
+      var updated = formatDate(data.kit_updated_at[name]);
+
+      var li = document.createElement("li");
+      li.className = "midi-drums-settings__profile";
+
+      var head = document.createElement("div");
+      head.className = "midi-drums-settings__profile-head";
+
+      var title = document.createElement("strong");
+      title.textContent = name + (name === data.active_kit ? " (active)" : "");
+      head.appendChild(title);
+
+      var updatedText = document.createElement("span");
+      updatedText.className = "midi-drums-settings__updated";
+      updatedText.textContent = updated ? "Last updated " + updated : "Not saved yet";
+      head.appendChild(updatedText);
+
+      li.appendChild(head);
+
+      // Coverage: every canonical piece as a chip; mapped ones are marked and
+      // every chip is a deep-link into the single-piece remap path on the
+      // player screen (#4's remapPiece — no full wizard re-run needed).
+      var chips = document.createElement("div");
+      chips.className = "midi-drums-settings__chips";
+      var coverageIds = PIECES.concat(extra);
+      coverageIds.forEach(function (pieceId) {
+        var isMapped = !!profile[pieceId];
+        var chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "midi-drums-settings__chip" + (isMapped ? " is-mapped" : "");
+        chip.textContent = (isMapped ? "✓ " : "") + pieceLabel(pieceId);
+        chip.title = isMapped
+          ? "Remap " + pieceLabel(pieceId) + " in the player (single-piece remap)"
+          : "Calibrate " + pieceLabel(pieceId) + " in the player";
+        chip.addEventListener("click", function () {
+          activateThenRemap(name, pieceId);
+        });
+        chips.appendChild(chip);
+      });
+      li.appendChild(chips);
+
+      var count = document.createElement("p");
+      count.className = "midi-drums-settings__count";
+      count.textContent = mapped.length + " of " + PIECES.length +
+        " standard pieces mapped" + (extra.length ? " (+" + extra.length + " extra)" : "");
+      li.appendChild(count);
+
+      var actions = document.createElement("div");
+      actions.className = "midi-drums-settings__actions";
+
+      var activateBtn = document.createElement("button");
+      activateBtn.type = "button";
+      activateBtn.className = "midi-drums-settings__button";
+      activateBtn.textContent = name === data.active_kit ? "Active" : "Set active";
+      activateBtn.disabled = name === data.active_kit;
+      activateBtn.addEventListener("click", function () {
+        persist({ active_kit: name });
+      });
+      actions.appendChild(activateBtn);
+
+      var renameBtn = document.createElement("button");
+      renameBtn.type = "button";
+      renameBtn.className = "midi-drums-settings__button";
+      renameBtn.textContent = "Rename";
+      renameBtn.addEventListener("click", function () {
+        var next = window.prompt("Rename kit profile \"" + name + "\" to:");
+        if (!next) return;
+        var clean = String(next).trim().replace(/\s+/g, " ").slice(0, 100);
+        if (!clean || clean === name) return;
+        if (clean in data.kit_profiles) {
+          setStatus("A profile named \"" + clean + "\" already exists.");
+          return;
+        }
+        var profiles = {};
+        Object.keys(data.kit_profiles).forEach(function (key) {
+          profiles[key === name ? clean : key] = data.kit_profiles[key];
+        });
+        var stamps = {};
+        Object.keys(data.kit_updated_at).forEach(function (key) {
+          stamps[key === name ? clean : key] = data.kit_updated_at[key];
+        });
+        var nextDoc = {
+          kit_profiles: profiles,
+          kit_updated_at: stamps,
+          active_kit: data.active_kit === name ? clean : data.active_kit,
+        };
+        persist(nextDoc);
+      });
+      actions.appendChild(renameBtn);
+
+      var deleteBtn = document.createElement("button");
+      deleteBtn.type = "button";
+      deleteBtn.className = "midi-drums-settings__button midi-drums-settings__button--danger";
+      deleteBtn.textContent = "Delete";
+      deleteBtn.addEventListener("click", function () {
+        if (!window.confirm("Delete kit profile \"" + name + "\"? Its mappings are lost.")) return;
+        var profiles = {};
+        Object.keys(data.kit_profiles).forEach(function (key) {
+          if (key !== name) profiles[key] = data.kit_profiles[key];
+        });
+        var stamps = {};
+        Object.keys(data.kit_updated_at).forEach(function (key) {
+          if (key !== name) stamps[key] = data.kit_updated_at[key];
+        });
+        // Deleting the active profile falls back to the player screen's own
+        // recover-on-demand default ("default"), never to "profile points at
+        // nothing" and never to silently activating another kit.
+        var nextDoc = {
+          kit_profiles: profiles,
+          kit_updated_at: stamps,
+          active_kit: data.active_kit === name ? "default" : data.active_kit,
+        };
+        persist(nextDoc);
+      });
+      actions.appendChild(deleteBtn);
+
+      li.appendChild(actions);
+      return li;
+    }
+
+    async function activateThenRemap(profileName, pieceId) {
+      if (profileName !== data.active_kit) {
+        var ok = await persist({ active_kit: profileName });
+        if (!ok) return;
+      }
+      // Hand the piece to the player screen's single-piece remap path (#4):
+      // the wizard consumes `remapPiece` on the next activation.
+      try {
+        if (window.feedBack && typeof window.feedBack.navigate === "function") {
+          window.feedBack.navigate(REMAP_SCREEN, { remapPiece: pieceId });
+          return;
+        }
+      } catch (_) { /* fall through to the hint */ }
+      setStatus(
+        "Set \"" + profileName + "\" active, then open the MIDI Drums screen and remap \"" +
+        pieceLabel(pieceId) + "\" there."
+      );
+    }
+
+    function render() {
+      if (!listEl || !emptyEl) return;
+      var names = Object.keys(data.kit_profiles).sort(function (a, b) {
+        return a.localeCompare(b);
+      });
+      listEl.textContent = "";
+      names.forEach(function (name) {
+        listEl.appendChild(renderProfilesCardFor(name));
+      });
+      emptyEl.hidden = names.length > 0;
+      listEl.hidden = names.length === 0;
+    }
+
+    if (createBtn) {
+      createBtn.addEventListener("click", async function () {
+        var name = newNameEl ? String(newNameEl.value).trim().replace(/\s+/g, " ").slice(0, 100) : "";
+        if (!name) {
+          setStatus("A profile name is required.");
+          return;
+        }
+        if (name in data.kit_profiles) {
+          setStatus("A profile named \"" + name + "\" already exists.");
+          return;
+        }
+        var profiles = Object.assign({}, data.kit_profiles);
+        profiles[name] = {};
+        // Created-empty stamp: "last updated" is truthful from the moment the
+        // profile exists, even before any wizard fill.
+        var stamp = {};
+        Object.keys(data.kit_updated_at).forEach(function (key) {
+          stamp[key] = data.kit_updated_at[key];
+        });
+        stamp[name] = new Date().toISOString();
+        var saved = await persist({
+          kit_profiles: profiles,
+          kit_updated_at: stamp,
+          active_kit: name,
+        });
+        if (saved && newNameEl) newNameEl.value = "";
+      });
+    }
+
+    render();
+    fetchProfiles();
+  })();
+</script>

@@ -6,9 +6,11 @@
   class `screen`) before running screen.js. screen.js finds these nodes by
   `data-role` inside that root; nothing here is queried globally.
 
-  Device access only: this screen owns the midi-input conversation
-  (discover / list / open / close) and reports what the domain hands back.
-  Kit calibration, chart reading and scoring land on top of this later.
+  Covers the whole stack: the midi-input conversation (discover / list /
+  open / close), kit-profile selection + calibration wizard (remap included),
+  drum-chart status with the multi-part picker, and the live scoring panel.
+  Kit-profile create/rename/delete also live in the plugin's Settings panel;
+  this screen only picks the active profile and creates one.
 -->
 <div class="midi-drums">
   <header class="midi-drums__header">
@@ -55,6 +57,32 @@
     <p class="midi-drums__hint" data-role="drumtab-hint">
       Waiting for a loaded song/drum chart to determine which pieces to calibrate.
     </p>
+
+    <div class="midi-drums__profiles">
+      <label for="midi-drums-profile-select">Active kit profile</label>
+      <div class="midi-drums__profiles-row">
+        <select
+          id="midi-drums-profile-select"
+          class="midi-drums__select"
+          data-role="profile-select"
+        ></select>
+        <input
+          type="text"
+          class="midi-drums__input"
+          placeholder="New kit name"
+          maxlength="100"
+          data-role="profile-name"
+        />
+        <button type="button" class="midi-drums__button" data-role="profile-create">
+          Create
+        </button>
+      </div>
+      <p class="midi-drums__hint">
+        Rename, delete and per-piece remapping live in
+        <strong>Settings &rarr; Plugins &rarr; MIDI Drums</strong>. The wizard
+        always calibrates the active profile.
+      </p>
+    </div>
 
     <div class="midi-drums__wizard" data-role="wizard" hidden>
       <div class="midi-drums__wizard-step" data-role="wizard-intro" hidden>
@@ -140,6 +168,18 @@
       Live hit matching against the loaded drum chart.
     </p>
 
+    <p class="midi-drums__hint" data-role="chart-status" hidden></p>
+
+    <div class="midi-drums__part-row" data-role="drum-part-row">
+      <label for="midi-drums-drum-part">Drum part</label>
+      <select
+        id="midi-drums-drum-part"
+        class="midi-drums__select"
+        data-role="drum-part"
+        hidden
+      ></select>
+    </div>
+
     <div class="midi-drums__score">
       <div class="midi-drums__score-item">
         <span class="midi-drums__score-label">Hits:</span>
@@ -147,9 +187,19 @@
       </div>
       <div class="midi-drums__score-item">
         <span class="midi-drums__score-label">Accuracy:</span>
-        <span class="midi-drums__score-value" data-role="score-accuracy">0%</span>
+        <span class="midi-drums__score-value" data-role="score-accuracy">&mdash;</span>
+      </div>
+      <div class="midi-drums__score-item">
+        <span class="midi-drums__score-label">Streak:</span>
+        <span class="midi-drums__score-value" data-role="score-streak">0</span>
+      </div>
+      <div class="midi-drums__score-item">
+        <span class="midi-drums__score-label">Extra hits:</span>
+        <span class="midi-drums__score-value" data-role="score-extras">0</span>
       </div>
     </div>
+
+    <p class="midi-drums__hint" data-role="score-unmapped" hidden></p>
   </section>
 
   <section class="midi-drums__panel">

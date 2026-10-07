@@ -10,6 +10,10 @@
   "scriptType": "classic",
   "styles": "assets/plugin.css",
   "routes": "routes.py",
+  "settings": {
+    "html": "settings.html",
+    "server_files": ["midi-drums.json"]
+  },
   "category": "practice",
   "standards": [
     "capability-pipelines.v1",

@@ -1,8 +1,10 @@
 # midi-drums
 
-Device-access layer for MIDI drum controllers. Scans for input devices, opens
-several at once, and merges their note-ons into a single tagged stream — the
-foundation the kit-profile work builds on.
+Input + scoring plugin for MIDI drum controllers. Scans for input devices,
+opens several at once, merges their note-ons into a single tagged stream, then
+calibrates them into kit profiles, consumes the loaded song's drum chart, and
+scores live hits against it — feeding the active highway renderer through
+`highway.setNoteStateProvider`.
 
 This plugin never touches the Web MIDI API. It goes through the Host's
 capability layer, `window.feedBack.midiInput`, and is written to work when that
@@ -12,10 +14,11 @@ domain is absent or mid-version.
 
 | File | Purpose |
 |---|---|
-| `plugin.json` | Manifest — capability declaration, `type: "input"`, nav entry, no settings panel |
-| `screen.html` | Device list, rescan control, saved-device status, bounded hit log |
-| `screen.js` | Device layer (`window.midiDrumsDevices`) + screen lifecycle |
-| `routes.py` | Server-persisted selection (`source_keys`) at `/api/plugins/midi-drums/settings` |
+| `plugin.json` | Manifest — capability declaration, `type: "input"`, nav entry, settings panel, server_files |
+| `screen.html` | Device list, kit-profile picker, calibration wizard, chart status (+ part picker), scoring panel, bounded hit log |
+| `screen.js` | Device layer + kit-profile CRUD + drum-chart consumption (own WS) + live scoring engine + note-state provider |
+| `settings.html` | Kit-profile management panel (list/create/rename/delete/set-active, coverage chips, piece remap deep-links) |
+| `routes.py` | Server persistence at `/api/plugins/midi-drums/settings` and `/api/plugins/midi-drums/kit-profiles` |
 | `assets/plugin.css` | Styling scoped to the plugin |
 
 ## How it talks to MIDI
@@ -77,6 +80,38 @@ offHits();
 `subscribe` fires immediately with the current state. `onHit` is the merged
 stream across every open source; each hit carries the `logicalSourceKey` it came
 from, so a consumer never has to track connections itself.
+
+## Kit profiles and scoring
+
+Beyond device identity, the layer stores `kit_profiles` (piece-id →
+`{note, channel, logicalSourceKey}` per named profile), `kit_updated_at`
+(per-profile last-modified stamps), and `per_song_overrides` (sparse song-key →
+piece → mapping overlays), all validated and salvaged key-by-key server-side.
+
+- **Kit pieces come from `lib/drums.py`.** The 18-id canonical vocabulary is
+  mirrored in `screen.js`; ids a newer pack references beyond it round-trip
+  with a title-cased display fallback.
+- **The wizard calibrates the active profile.** `Settings → Plugins → MIDI
+  Drums` owns full CRUD (create/rename/delete/set-active, coverage chips);
+  piece chips there deep-link into the player screen's single-piece remap
+  path via nav params.
+- **The drum chart comes over the plugin's own WebSocket.** Core's highway
+  hands `drum_tab`/`drum_hits` only to renderer bundles — no bus event, no
+  public getter — so the plugin listens on the same `/ws/highway/<file>`
+  endpoint itself (the server's extraction caches make the second connection
+  cheap). `?drum_part=` selects the streaming part; multi-part packs surface
+  a picker. Legacy packs that encode drums as guitar notes stream no
+  `drum_tab` and are treated as "no chart — scoring off" for this song.
+- **Scoring mirrors `drum_highway_3d`.** ±50 ms matching window with an
+  EARLY/OK/LATE split at 40%, misses swept per animation frame with a
+  connect-time floor (and re-armed on seek-back), per-hit judgments keyed on
+  `t|piece`, streak/accuracy readouts, and bounded surfacing of strikes that
+  match no mapped piece.
+- **Renderer feedback goes through `setNoteStateProvider`.** The layer
+  registers a function provider `(note, chartTime) => state` on
+  `window.highway` only while a device session is open (the contract is
+  last-call-wins, so squatters lose), returns decaying `alpha` glows, and
+  clears with `setNoteStateProvider(null)` on screen exit and disposal.
 
 ## Device identity
 
