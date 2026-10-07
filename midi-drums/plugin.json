@@ -1,7 +1,7 @@
 {
   "id": "midi-drums",
   "name": "MIDI Drums",
-  "version": "0.1.0",
+  "version": "0.1.0-rc.1",
   "description": "Reads drum triggers from MIDI devices through the core midi-input domain, so calibration and scoring work on any keyboard, pad controller or e-kit module.",
   "type": "input",
   "nav": { "label": "MIDI Drums", "screen": "plugin-midi-drums" },

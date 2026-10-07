@@ -26,4 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `midi-drums` calibrated against bus events `drum-tab`/`drum-hits`/`drum-part` that no host component emits; replaced with the plugin's own chart WS.
 - `midi-drums` dead code removed: `onDrumTabChanged` runner, the unused note-state wrapper, and an unreachable view-scope `registerWithHighway()` call.
 
+## [0.1.0-rc.1] - 2026-10-07
+
+Pre-release cut of the `midi-drums` plugin. All features above are present and
+the `my-plugin` template is included for reference. See the verification
+checklist in `AGENTS.md` before tagging the release.
+
 <!-- Add entries under Added, Changed, Deprecated, Removed, Fixed, or Security as changes land. -->

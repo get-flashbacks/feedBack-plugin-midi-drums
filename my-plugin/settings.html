@@ -121,7 +121,6 @@
             body: JSON.stringify(formData),
           });
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          console.log(`${PLUGIN_ID}: settings saved`);
         } catch (err) {
           console.error(`${PLUGIN_ID}: failed to save settings`, err);
         }
