@@ -16,9 +16,11 @@
   own routes — settings.server_files only names the file for Host-side
   export/import, never for direct client writes.
 
-  The script is standalone: it does not depend on the plugin screen having
-  ever been hydrated, because the settings panel renders in the Settings
-  screen where that hydration may not have happened.
+  The script is standalone: it talks straight to the plugin's own routes and
+  does not depend on the plugin screen having hydrated. That is deliberate —
+  core's plugin-loader mounts settings.html and runs its inline script
+  (plugin-loader.js:618-640) BEFORE loading screen.js, so the layer singleton
+  may not exist when the panel first renders.
 -->
 <div class="midi-drums-settings">
   <fieldset>
