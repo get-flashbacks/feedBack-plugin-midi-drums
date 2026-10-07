@@ -82,9 +82,9 @@ def _is_valid_setting(name: str, value: object) -> bool:
         # this only rejects a hand-edited file, which _read() then salvages.
         return len(set(value)) == len(value)
     if name == "active_kit":
-        # Reserved keys are rejected here too — `active_kit` is the slot the
-        # client reads first, so a hand-edited `__proto__` would shadow the
-        # default on the next read rather than failing loudly.
+        # Reserved names are rejected on the write path only: this check sees
+        # request bodies, and `_read()` reconciles a hand-edited `active_kit`
+        # that is not in `kit_profiles` back to a real profile.
         return (
             isinstance(value, str)
             and 0 < len(value) <= MAX_PROFILE_NAME_LEN
