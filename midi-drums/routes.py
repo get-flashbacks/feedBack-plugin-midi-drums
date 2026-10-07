@@ -260,6 +260,8 @@ def setup(app: FastAPI, context: dict) -> None:
             return {}
         clean = {}
         for song_id, pieces in value.items():
+            if song_id in _RESERVED_KEYS:
+                continue
             if type(song_id) is not str or not song_id or len(song_id) > MAX_SONG_ID_LEN:
                 continue
             clean_pieces = _sanitise_piece_mappings(pieces)
