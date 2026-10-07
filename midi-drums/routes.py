@@ -216,12 +216,16 @@ def setup(app: FastAPI, context: dict) -> None:
                 break
         return clean
 
+    _RESERVED_KEYS = frozenset({"__proto__", "constructor", "prototype"})
+
     def _sanitise_kit_profiles(value: object) -> dict:
         """Coerce persisted kit profiles into something valid."""
         if not isinstance(value, dict):
             return {}
         clean = {}
         for profile_name, profile in value.items():
+            if profile_name in _RESERVED_KEYS:
+                continue
             if not isinstance(profile_name, str) or not profile_name or len(profile_name) > MAX_PROFILE_NAME_LEN:
                 continue
             if not isinstance(profile, dict):
@@ -239,6 +243,8 @@ def setup(app: FastAPI, context: dict) -> None:
             return {}
         clean = {}
         for profile_name, stamp in value.items():
+            if profile_name in _RESERVED_KEYS:
+                continue
             if type(profile_name) is not str or not profile_name or len(profile_name) >= MAX_PROFILE_NAME_LEN:
                 continue
             if type(stamp) is not str or not stamp or len(stamp) > 40:
