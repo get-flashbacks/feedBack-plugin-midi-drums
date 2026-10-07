@@ -243,7 +243,7 @@
         if (!next) return;
         var clean = String(next).trim().replace(/\s+/g, " ").slice(0, 100);
         if (!clean || clean === name) return;
-        if (clean in data.kit_profiles) {
+        if (Object.prototype.hasOwnProperty.call(data.kit_profiles, clean)) {
           setStatus("A profile named \"" + clean + "\" already exists.");
           return;
         }
@@ -333,7 +333,7 @@
           setStatus("A profile name is required.");
           return;
         }
-        if (name in data.kit_profiles) {
+        if (Object.prototype.hasOwnProperty.call(data.kit_profiles, name)) {
           setStatus("A profile named \"" + name + "\" already exists.");
           return;
         }
