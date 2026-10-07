@@ -59,6 +59,13 @@ _DEFAULTS = {
     "per_song_overrides": {},
 }
 
+# Profile and song keys the sanitisers drop on read: handing one back to the
+# browser, where `obj["__proto__"] = ...` hits the Object.prototype setter
+# instead of creating a key, corrupts the client's view. Validation rejects
+# the same set on write so a reserved key can never be saved only to
+# silently disappear on the next read.
+_RESERVED_KEYS = frozenset({"__proto__", "constructor", "prototype"})
+
 
 def _is_valid_setting(name: str, value: object) -> bool:
     """Return whether a setting value matches the schema."""
@@ -83,6 +90,8 @@ def _is_valid_setting(name: str, value: object) -> bool:
         for profile_name, profile in value.items():
             if not isinstance(profile_name, str) or not profile_name or len(profile_name) > MAX_PROFILE_NAME_LEN:
                 return False
+            if profile_name in _RESERVED_KEYS:
+                return False
             if not isinstance(profile, dict):
                 return False
             if len(profile) > MAX_PIECES_PER_PROFILE:
@@ -101,6 +110,7 @@ def _is_valid_setting(name: str, value: object) -> bool:
         return all(
             type(stamp_key) is str
             and 0 < len(stamp_key) < MAX_PROFILE_NAME_LEN
+            and stamp_key not in _RESERVED_KEYS
             and type(stamp) is str
             and 0 < len(stamp) <= 40
             for stamp_key, stamp in value.items()
@@ -110,6 +120,8 @@ def _is_valid_setting(name: str, value: object) -> bool:
             return False
         for song_id, pieces in value.items():
             if type(song_id) is not str or not song_id or len(song_id) > MAX_SONG_ID_LEN:
+                return False
+            if song_id in _RESERVED_KEYS:
                 return False
             if not isinstance(pieces, dict) or len(pieces) > MAX_PIECES_PER_PROFILE:
                 return False
@@ -215,8 +227,6 @@ def setup(app: FastAPI, context: dict) -> None:
             if len(clean) == MAX_PIECES_PER_PROFILE:
                 break
         return clean
-
-    _RESERVED_KEYS = frozenset({"__proto__", "constructor", "prototype"})
 
     def _sanitise_kit_profiles(value: object) -> dict:
         """Coerce persisted kit profiles into something valid."""
