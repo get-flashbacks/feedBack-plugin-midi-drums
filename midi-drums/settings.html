@@ -34,7 +34,7 @@
         type="text"
         class="midi-drums-settings__input"
         placeholder="New kit profile name"
-        maxlength="100"
+        maxlength="99"
         data-role="new-name"
         aria-label="New kit profile name"
       />
@@ -241,7 +241,7 @@
       renameBtn.addEventListener("click", function () {
         var next = window.prompt("Rename kit profile \"" + name + "\" to:");
         if (!next) return;
-        var clean = String(next).trim().replace(/\s+/g, " ").slice(0, 100);
+        var clean = String(next).trim().replace(/\s+/g, " ").slice(0, 99);
         if (!clean || clean === name) return;
         if (Object.prototype.hasOwnProperty.call(data.kit_profiles, clean)) {
           setStatus("A profile named \"" + clean + "\" already exists.");
@@ -328,7 +328,7 @@
 
     if (createBtn) {
       createBtn.addEventListener("click", async function () {
-        var name = newNameEl ? String(newNameEl.value).trim().replace(/\s+/g, " ").slice(0, 100) : "";
+        var name = newNameEl ? String(newNameEl.value).trim().replace(/\s+/g, " ").slice(0, 99) : "";
         if (!name) {
           setStatus("A profile name is required.");
           return;
