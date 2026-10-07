@@ -7,8 +7,9 @@ guessing. Keys — not device labels — are stored: a label is hardware text th
 can change with a driver update, while the domain's logicalSourceKey is stable
 per provider + source id.
 
-Also persists kit profiles - mappings from drum piece IDs to MIDI trigger
-mappings ({note, channel, logicalSourceKey}).
+Also persists kit profiles (piece-id -> {note, channel, logicalSourceKey}
+mappings), the active profile, per-profile last-modified stamps, and per-song
+piece overrides.
 
 Follows the same shape as the template's routes.py: all work happens inside
 setup(), configuration is read tolerantly, routes are namespaced under the
@@ -33,11 +34,37 @@ MAX_SOURCE_KEYS = 8
 # Must match MAX_SOURCE_KEY_LEN in screen.js, so an over-long key read back from
 # here can still be re-saved without the server rejecting the POST.
 MAX_SOURCE_KEY_LEN = 200
+# Kit-profile collection bounds. Piece-id values are deliberately NOT checked
+# against a closed vocabulary: lib/drums.py lets unknown piece-ids round-trip
+# for forward-compat, and a profile saved by a newer plugin build must keep
+# loading here. Shape-level bounds only.
+MAX_KIT_PROFILES = 64
+MAX_PROFILE_NAME_LEN = 100
+MAX_PIECE_ID_LEN = 50
+MAX_PIECES_PER_PROFILE = 64
+# Per-song overrides are a sparse overlay of the active kit profile, so they
+# share the profile bounds plus a generous song-key bound.
+MAX_SONG_OVERRIDE_KEYS = 256
+MAX_SONG_ID_LEN = 200
+# The profiles document is the biggest thing this plugin stores (64 profiles of
+# up to 18-piece e-kits can plausibly reach ~200 KiB of JSON), so the profile
+# routes take their own, larger body cap than the 16 KiB selection cap.
+MAX_KIT_PROFILES_BODY_BYTES = 256 * 1024
+
 _DEFAULTS = {
     "source_keys": [],
     "active_kit": "default",
     "kit_profiles": {},
+    "kit_updated_at": {},
+    "per_song_overrides": {},
 }
+
+# Profile and song keys the sanitisers drop on read: handing one back to the
+# browser, where `obj["__proto__"] = ...` hits the Object.prototype setter
+# instead of creating a key, corrupts the client's view. Validation rejects
+# the same set on write so a reserved key can never be saved only to
+# silently disappear on the next read.
+_RESERVED_KEYS = frozenset({"__proto__", "constructor", "prototype"})
 
 
 def _is_valid_setting(name: str, value: object) -> bool:
@@ -55,35 +82,84 @@ def _is_valid_setting(name: str, value: object) -> bool:
         # this only rejects a hand-edited file, which _read() then salvages.
         return len(set(value)) == len(value)
     if name == "active_kit":
-        return isinstance(value, str) and 0 < len(value) < 100
+        # Reserved names are rejected on the write path only: this check sees
+        # request bodies, and `_read()` reconciles a hand-edited `active_kit`
+        # that is not in `kit_profiles` back to a real profile.
+        return (
+            isinstance(value, str)
+            and 0 < len(value) <= MAX_PROFILE_NAME_LEN
+            and value not in _RESERVED_KEYS
+        )
     if name == "kit_profiles":
-        if not isinstance(value, dict):
+        if not isinstance(value, dict) or len(value) > MAX_KIT_PROFILES:
             return False
         # Basic validation - each profile is a dict of piece->mapping
         for profile_name, profile in value.items():
-            if not isinstance(profile_name, str) or len(profile_name) > 100:
+            if not isinstance(profile_name, str) or not profile_name or len(profile_name) > MAX_PROFILE_NAME_LEN:
+                return False
+            if profile_name in _RESERVED_KEYS:
                 return False
             if not isinstance(profile, dict):
                 return False
+            if len(profile) > MAX_PIECES_PER_PROFILE:
+                return False
             for piece_id, mapping in profile.items():
-                if not isinstance(piece_id, str) or len(piece_id) > 50:
+                if not isinstance(piece_id, str) or not piece_id or len(piece_id) > MAX_PIECE_ID_LEN:
                     return False
-                if not isinstance(mapping, dict):
+                if not _is_valid_trigger_mapping(mapping):
                     return False
-                # Validate mapping structure
-                for key in mapping:
-                    if key not in ("note", "channel", "logicalSourceKey"):
-                        return False
-                if "note" not in mapping or type(mapping["note"]) is not int or mapping["note"] < 0 or mapping["note"] > 127:
+        return True
+    if name == "kit_updated_at":
+        if not isinstance(value, dict) or len(value) > MAX_KIT_PROFILES:
+            return False
+        # Stamps are display-only ISO strings, so a loose-but-typed check is
+        # enough: bounded key, bounded string.
+        return all(
+            type(stamp_key) is str
+            and 0 < len(stamp_key) <= MAX_PROFILE_NAME_LEN
+            and stamp_key not in _RESERVED_KEYS
+            and type(stamp) is str
+            and 0 < len(stamp) <= 40
+            for stamp_key, stamp in value.items()
+        )
+    if name == "per_song_overrides":
+        if not isinstance(value, dict) or len(value) > MAX_SONG_OVERRIDE_KEYS:
+            return False
+        for song_id, pieces in value.items():
+            if type(song_id) is not str or not song_id or len(song_id) > MAX_SONG_ID_LEN:
+                return False
+            if song_id in _RESERVED_KEYS:
+                return False
+            if not isinstance(pieces, dict) or len(pieces) > MAX_PIECES_PER_PROFILE:
+                return False
+            for piece_id, mapping in pieces.items():
+                if type(piece_id) is not str or not piece_id or len(piece_id) > MAX_PIECE_ID_LEN:
                     return False
-                if "channel" not in mapping or type(mapping["channel"]) is not int or mapping["channel"] < 0 or mapping["channel"] > 15:
-                    return False
-                if "logicalSourceKey" not in mapping:
-                    return False
-                if type(mapping["logicalSourceKey"]) is not str:
+                if not _is_valid_trigger_mapping(mapping):
                     return False
         return True
     return False
+
+
+def _is_valid_trigger_mapping(mapping: object) -> bool:
+    """A piece trigger mapping is exactly {note, channel, logicalSourceKey}.
+
+    Exact-keys matching (rather than "has the required keys") keeps a stray
+    leftover field from a hand-edit out of the stored shape, where it would be
+    silently carried forever.
+    """
+    if not isinstance(mapping, dict) or len(mapping) != 3:
+        return False
+    for key in ("note", "channel", "logicalSourceKey"):
+        if key not in mapping:
+            return False
+    if type(mapping["note"]) is not int or not 0 <= mapping["note"] <= 127:
+        return False
+    if type(mapping["channel"]) is not int or not 0 <= mapping["channel"] <= 15:
+        return False
+    if type(mapping["logicalSourceKey"]) is not str or not mapping["logicalSourceKey"]:
+        return False
+    return True
 
 
 def _sanitise_source_keys(keys: object) -> list:
@@ -125,39 +201,91 @@ def setup(app: FastAPI, context: dict) -> None:
     # interleave their read and write and lose one of the two selections.
     write_lock = threading.Lock()
 
+    def _sanitise_trigger_mapping(mapping: object) -> dict | None:
+        """Return a clean {note, channel, logicalSourceKey} dict or None."""
+        if not isinstance(mapping, dict):
+            return None
+        note = mapping.get("note")
+        channel = mapping.get("channel")
+        logical_source_key = mapping.get("logicalSourceKey")
+        if type(note) is not int or note < 0 or note > 127:
+            return None
+        if type(channel) is not int or channel < 0 or channel > 15:
+            return None
+        if type(logical_source_key) is not str or not logical_source_key:
+            return None
+        return {
+            "note": note,
+            "channel": channel,
+            "logicalSourceKey": logical_source_key,
+        }
+
+    def _sanitise_piece_mappings(mappings: object) -> dict:
+        """Salvage a piece-id -> mapping dict key-by-key."""
+        if not isinstance(mappings, dict):
+            return {}
+        clean = {}
+        for piece_id, mapping in mappings.items():
+            if not isinstance(piece_id, str) or not piece_id or len(piece_id) > MAX_PIECE_ID_LEN:
+                continue
+            clean_mapping = _sanitise_trigger_mapping(mapping)
+            if clean_mapping is not None:
+                clean[piece_id] = clean_mapping
+            if len(clean) == MAX_PIECES_PER_PROFILE:
+                break
+        return clean
+
     def _sanitise_kit_profiles(value: object) -> dict:
         """Coerce persisted kit profiles into something valid."""
         if not isinstance(value, dict):
             return {}
         clean = {}
         for profile_name, profile in value.items():
-            if not isinstance(profile_name, str) or len(profile_name) > 100:
+            if profile_name in _RESERVED_KEYS:
+                continue
+            if not isinstance(profile_name, str) or not profile_name or len(profile_name) > MAX_PROFILE_NAME_LEN:
                 continue
             if not isinstance(profile, dict):
                 continue
-            clean_profile = {}
-            for piece_id, mapping in profile.items():
-                if not isinstance(piece_id, str) or len(piece_id) > 50:
-                    continue
-                if not isinstance(mapping, dict):
-                    continue
-                # Validate and extract mapping
-                note = mapping.get("note")
-                channel = mapping.get("channel")
-                logicalSourceKey = mapping.get("logicalSourceKey")
-                if type(note) is not int or note < 0 or note > 127:
-                    continue
-                if type(channel) is not int or channel < 0 or channel > 15:
-                    continue
-                if type(logicalSourceKey) is not str:
-                    continue
-                clean_profile[piece_id] = {
-                    "note": note,
-                    "channel": channel,
-                    "logicalSourceKey": logicalSourceKey,
-                }
+            clean_profile = _sanitise_piece_mappings(profile)
             if clean_profile:
                 clean[profile_name] = clean_profile
+            if len(clean) == MAX_KIT_PROFILES:
+                break
+        return clean
+
+    def _sanitise_stamps(value: object) -> dict:
+        """Coerce persisted kit_updated_at stamps into something displayable."""
+        if not isinstance(value, dict):
+            return {}
+        clean = {}
+        for profile_name, stamp in value.items():
+            if profile_name in _RESERVED_KEYS:
+                continue
+            if type(profile_name) is not str or not profile_name or len(profile_name) > MAX_PROFILE_NAME_LEN:
+                continue
+            if type(stamp) is not str or not stamp or len(stamp) > 40:
+                continue
+            clean[profile_name] = stamp
+            if len(clean) == MAX_KIT_PROFILES:
+                break
+        return clean
+
+    def _sanitise_song_overrides(value: object) -> dict:
+        """Coerce persisted per-song piece overrides into something valid."""
+        if not isinstance(value, dict):
+            return {}
+        clean = {}
+        for song_id, pieces in value.items():
+            if song_id in _RESERVED_KEYS:
+                continue
+            if type(song_id) is not str or not song_id or len(song_id) > MAX_SONG_ID_LEN:
+                continue
+            clean_pieces = _sanitise_piece_mappings(pieces)
+            if clean_pieces:
+                clean[song_id] = clean_pieces
+            if len(clean) == MAX_SONG_OVERRIDE_KEYS:
+                break
         return clean
 
     def _read() -> dict:
@@ -182,11 +310,20 @@ def setup(app: FastAPI, context: dict) -> None:
                 settings[key] = _sanitise_source_keys(value)
             elif key == "kit_profiles":
                 settings[key] = _sanitise_kit_profiles(value)
+            elif key == "kit_updated_at":
+                settings[key] = _sanitise_stamps(value)
+            elif key == "per_song_overrides":
+                settings[key] = _sanitise_song_overrides(value)
             elif key == "active_kit":
                 if isinstance(value, str) and value:
-                    settings[key] = value[:100]
+                    settings[key] = value[:MAX_PROFILE_NAME_LEN]
                 else:
                     settings[key] = "default"
+        # An active profile that was lost to salvage (or a hand edit) falls
+        # back to the default profile rather than pointing at nothing.
+        if settings["active_kit"] not in settings["kit_profiles"]:
+            has_any = bool(settings["kit_profiles"])
+            settings["active_kit"] = next(iter(settings["kit_profiles"]), "default") if has_any else "default"
         return settings
 
     # Fail fast on an unusable config_dir, before any route is registered — a
@@ -201,7 +338,7 @@ def setup(app: FastAPI, context: dict) -> None:
 
     @app.get(f"/api/plugins/{PLUGIN_ID}/settings")
     def get_settings() -> JSONResponse:
-        """Get the saved device selection and kit profiles."""
+        """Get the saved device selection, kit profiles, and overrides."""
         return JSONResponse(_read())
 
     @app.post(f"/api/plugins/{PLUGIN_ID}/settings")
@@ -209,7 +346,7 @@ def setup(app: FastAPI, context: dict) -> None:
         """Replace the saved settings.
 
         Accepts a bounded JSON object holding `source_keys`, `active_kit`,
-        and/or `kit_profiles`.
+        `kit_profiles`, `kit_updated_at`, and/or `per_song_overrides`.
         """
         content_length = request.headers.get("content-length")
         if content_length is not None:
@@ -283,26 +420,34 @@ def setup(app: FastAPI, context: dict) -> None:
 
         return JSONResponse(merged)
 
-    # Kit profile-specific endpoints for easier manipulation
+    # Kit profile-specific endpoints for easier manipulation. These carry the
+    # larger document (64 profiles' worth of mappings), so they take their own
+    # body cap instead of MAX_SETTINGS_BODY_BYTES.
     @app.get(f"/api/plugins/{PLUGIN_ID}/kit-profiles")
     def get_kit_profiles() -> JSONResponse:
-        """Get all kit profiles."""
+        """Get all kit profiles with their stamps and per-song overrides."""
         settings = _read()
         return JSONResponse({
             "active_kit": settings["active_kit"],
             "kit_profiles": settings["kit_profiles"],
+            "kit_updated_at": settings["kit_updated_at"],
+            "per_song_overrides": settings["per_song_overrides"],
         })
 
     @app.post(f"/api/plugins/{PLUGIN_ID}/kit-profiles")
     async def set_kit_profiles(request: Request) -> JSONResponse:
-        """Update kit profiles."""
+        """Update kit profiles, the active profile, stamps, and/or overrides."""
         content_length = request.headers.get("content-length")
         if content_length is not None:
             try:
                 content_length_value = int(content_length)
-                if content_length_value < 0 or content_length_value > MAX_SETTINGS_BODY_BYTES:
+                if content_length_value < 0:
                     return JSONResponse(
-                        {"error": "invalid content length"}, status_code=400
+                        {"error": "invalid Content-Length header"}, status_code=400
+                    )
+                if content_length_value > MAX_KIT_PROFILES_BODY_BYTES:
+                    return JSONResponse(
+                        {"error": "request body too large"}, status_code=413
                     )
             except ValueError:
                 return JSONResponse(
@@ -312,7 +457,7 @@ def setup(app: FastAPI, context: dict) -> None:
         body = bytearray()
         try:
             async for chunk in request.stream():
-                if len(body) + len(chunk) > MAX_SETTINGS_BODY_BYTES:
+                if len(body) + len(chunk) > MAX_KIT_PROFILES_BODY_BYTES:
                     return JSONResponse(
                         {"error": "request body too large"}, status_code=413
                     )
@@ -325,24 +470,18 @@ def setup(app: FastAPI, context: dict) -> None:
             return JSONResponse(
                 {"error": "body must be a JSON object"}, status_code=400
             )
-
-        # Validate specific fields
-        if "active_kit" in incoming and not (isinstance(incoming["active_kit"], str) and incoming["active_kit"]):
+        if incoming.keys() - {"active_kit", "kit_profiles", "kit_updated_at", "per_song_overrides"}:
             return JSONResponse(
-                {"error": "body contains invalid setting values"}, status_code=400
+                {"error": "body contains unknown settings"}, status_code=400
             )
-        if "kit_profiles" in incoming and not _is_valid_setting("kit_profiles", incoming["kit_profiles"]):
+        if not all(_is_valid_setting(key, value) for key, value in incoming.items()):
             return JSONResponse(
                 {"error": "body contains invalid setting values"}, status_code=400
             )
 
         def _merge_and_persist() -> dict:
             with write_lock:
-                merged = {**_read()}
-                if "active_kit" in incoming:
-                    merged["active_kit"] = incoming["active_kit"][:100]
-                if "kit_profiles" in incoming:
-                    merged["kit_profiles"] = incoming["kit_profiles"]
+                merged = {**_read(), **incoming}
                 tmp_file = config_file.with_name(config_file.name + ".tmp")
                 tmp_file.write_text(json.dumps(merged, indent=2), encoding="utf-8")
                 os.replace(tmp_file, config_file)
@@ -350,6 +489,7 @@ def setup(app: FastAPI, context: dict) -> None:
 
         try:
             merged = await asyncio.to_thread(_merge_and_persist)
+            log.info("%s: kit profiles updated", PLUGIN_ID)
             return JSONResponse(merged)
         except Exception as exc:
             log.error("%s: failed to write settings: %s", PLUGIN_ID, exc)

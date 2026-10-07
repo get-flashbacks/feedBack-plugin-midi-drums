@@ -238,3 +238,151 @@
   gap: 0.5rem;
   flex-wrap: wrap;
 }
+/* Kit profile row (active-profile picker + inline create) */
+.midi-drums__profiles {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.midi-drums__profiles-row {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.midi-drums__select,
+.midi-drums__input {
+  padding: 0.35rem 0.5rem;
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+/* Drum-part picker row */
+.midi-drums__part-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin: 0.5rem 0;
+}
+
+.midi-drums__part-row[hidden] {
+  display: none;
+}
+
+/* Settings-panel kit profile management (scoped to .midi-drums-settings) */
+.midi-drums-settings fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.midi-drums-settings__hint,
+.midi-drums-settings__count,
+.midi-drums-settings__status {
+  margin: 0;
+  font-size: 0.85rem;
+  opacity: 0.8;
+}
+
+.midi-drums-settings__status {
+  color: #e0a040;
+}
+
+.midi-drums-settings__create {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.midi-drums-settings__input {
+  flex: 1 1 12rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.midi-drums-settings__button {
+  padding: 0.3rem 0.7rem;
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.midi-drums-settings__button:hover {
+  border-color: currentColor;
+}
+
+.midi-drums-settings__button--danger {
+  border-color: rgba(200, 70, 70, 0.6);
+  color: #d08080;
+}
+
+.midi-drums-settings__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.midi-drums-settings__profile {
+  padding: 0.65rem;
+  border: 1px solid rgba(128, 128, 128, 0.3);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.midi-drums-settings__profile-head {
+  display: flex;
+  gap: 0.75rem;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.midi-drums-settings__updated {
+  font-size: 0.8rem;
+  opacity: 0.7;
+}
+
+.midi-drums-settings__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.midi-drums-settings__chip {
+  padding: 0.15rem 0.5rem;
+  font-size: 0.78rem;
+  border: 1px solid rgba(128, 128, 128, 0.35);
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  opacity: 0.55;
+  cursor: pointer;
+}
+
+.midi-drums-settings__chip.is-mapped {
+  opacity: 1;
+  border-color: rgba(90, 180, 120, 0.8);
+}
+
+.midi-drums-settings__actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}

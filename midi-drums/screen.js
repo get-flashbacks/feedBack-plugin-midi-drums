@@ -10,11 +10,15 @@
 // pad controller or an e-kit module — Web MIDI abstracts all three identically
 // at this layer.
 //
-// What this file owns is device access only. Kit calibration, drum-chart
-// consumption and scoring build on top of `window.midiDrumsDevices`, which
-// already hands them a single logical stream of note-ons tagged with the
-// `logicalSourceKey` they arrived on (so a kick pedal on one interface and pads
-// on another stay distinguishable).
+// What this file owns is the device layer plus everything built on it: the
+// kit-profile CRUD (with per-profile last-modified stamps and per-song piece
+// overrides), drum-chart consumption (its own WS listener — see below), the
+// live hit-matching/scoring engine, and the note-state provider that hands
+// judgments to whichever highway renderer is active
+// (`highway.setNoteStateProvider`, core feedBack#254 contract). The device
+// layer (`window.midiDrumsDevices`) hands all of it a single logical stream
+// of note-ons tagged with the `logicalSourceKey` they arrived on (so a kick
+// pedal on one interface and pads on another stay distinguishable).
 (function () {
     'use strict';
 
@@ -30,23 +34,30 @@
     const MAX_SOURCES = 8;
     const MAX_SOURCE_KEY_LEN = 200;
     const MAX_HIT_ROWS = 12;
-    // Common drum piece IDs (as referenced in the host's drum tab)
+    // Canonical drum piece vocabulary, 1:1 with the host's lib/drums.py
+    // PIECES. Kit profiles key their mappings on these ids and must never
+    // invent ids of their own — a newer sloppak may still reference a piece
+    // missing here; such ids round-trip (title-cased display fallback) like
+    // they do in lib/drums.py.
     const PIECES = {
         kick: { name: 'Kick' },
         snare: { name: 'Snare' },
+        snare_xstick: { name: 'Snare Cross-Stick' },
+        tom_hi: { name: 'Hi Tom' },
+        tom_mid: { name: 'Mid Tom' },
+        tom_low: { name: 'Low Tom' },
+        tom_floor: { name: 'Floor Tom' },
         hh_closed: { name: 'Hi-Hat Closed' },
         hh_open: { name: 'Hi-Hat Open' },
-        crash: { name: 'Crash' },
+        hh_pedal: { name: 'Hi-Hat Pedal' },
+        stack: { name: 'Stack' },
+        crash_l: { name: 'Crash Left' },
+        crash_r: { name: 'Crash Right' },
+        splash: { name: 'Splash' },
+        china: { name: 'China' },
         ride: { name: 'Ride' },
-        tom1: { name: 'Tom 1' },
-        tom2: { name: 'Tom 2' },
-        tom3: { name: 'Tom 3' },
-        floor_tom: { name: 'Floor Tom' },
-        rim: { name: 'Rim Shot' },
-        clap: { name: 'Clap' },
-        cowbell: { name: 'Cowbell' },
-        crash2: { name: 'Crash 2' },
-        ride2: { name: 'Ride 2' },
+        ride_bell: { name: 'Ride Bell' },
+        bell: { name: 'Bell' },
     };
 
     // ── domain access ──────────────────────────────────────────────────────
@@ -89,24 +100,56 @@
         // our screen is not the active one.
         let active = false;
         let sourcesChangedBound = false;
+        let chartBusBound = false;
         const hitListeners = new Set();
         const stateListeners = new Set();
         const activateListeners = new Set();
-        const drumTabListeners = new Set();
         let activeKit = 'default';
         let kitProfiles = {};
-        let currentDrumTab = null;
-        let currentDrumHits = null;
-        let currentDrumPart = null;
+        // Per-profile last-modified stamps (ISO strings), keyed by profile
+        // name — the flat companion of kitProfiles, moved alongside the
+        // profile on rename and dropped with it on delete.
+        let kitUpdatedAt = {};
+        // Sparse per-song piece overrides: songKey -> {pieceId -> mapping}.
+        // Consulted before the base profile so a song-specific trigger swap
+        // survives profile switches.
+        let perSongOverrides = {};
+        // ── drum chart (own WS) ─────────────────────────────────────────
+        // The highway buffers the chart into its renderer bundle only — no
+        // bus event, no public getter — so the chart is consumed over this
+        // plugin's own WS connection to the same endpoint.
+        let chartWs = null;
+        let chartWsGen = 0;
+        let chartStatus = 'idle';   // idle|connecting|loading|ready|no-chart|closed|failed
+        let chartReason = '';
+        let drumParts = [];         // [{id, name}] from song_info
+        let activePartId = null;    // ?drum_part= selection (null = primary)
+        let chartSongKey = '';      // song the loaded chart belongs to
+        let currentDrumTab = null;  // {version, name, kit: [{id,name}], part_id}
+        let currentDrumHits = [];   // [{t, p, v?, g?, f?, k?}] sorted by t
         let wizardState = null; // { phase, currentPiece, pendingPieces, captures, capturing }
-        let noteStateProvider = null;
-        let lastNoteState = null;
+        let providerInstalled = false;
+        // ── live scoring ────────────────────────────────────────────────
         let scoreState = {
             hits: 0,
             misses: 0,
             total: 0,
             accuracy: 0,
+            streak: 0,
+            bestStreak: 0,
+            extras: 0,
         };
+        // Chart-hit key ("t|piece") -> { state: 'hit'|'miss', at:
+        // performance.now(), ts?: 'EARLY'|'OK'|'LATE' }. The note-state
+        // provider reads this map per visible chart note; the miss sweep and
+        // the hit matcher both write it.
+        const scoredJudgments = new Map();
+        // Song-time at-or-before which chart notes are exempt from the miss
+        // sweep (notes that elapsed with no device able to record them).
+        let missFloor = -Infinity;
+        let lastPlaybackTime = null;
+        let hadOpenSession = false;
+        let sweepTimer = null;
 
         function nextGeneration(key) {
             const next = (generations.get(key) || 0) + 1;
@@ -132,11 +175,17 @@
                 savedKeys: savedKeys.slice(),
                 activeKit,
                 kitProfiles: kitProfiles,
+                kitUpdatedAt: kitUpdatedAt,
+                perSongOverrides: perSongOverrides,
+                chartStatus,
+                chartReason,
+                drumParts: drumParts.slice(),
+                activePartId,
                 currentDrumTab,
                 currentDrumHits,
-                currentDrumPart,
                 scoreState: { ...scoreState },
                 wizard: wizardState ? { ...wizardState } : null,
+                unmapped: unmappedSummary(),
             };
         }
 
@@ -363,10 +412,9 @@
                 };
                 emitState();
             }
-            // Handle scoring for live hits
+            // Score the strike against the loaded chart (also feeds the
+            // judgment map the note-state provider reads).
             handleHitForScoring(hit);
-            // Update note state provider if registered
-            updateNoteStateForHit(hit);
         }
 
         function confirmWizardHit() {
@@ -498,6 +546,11 @@
                 }
                 if (settings.active_kit) activeKit = settings.active_kit;
                 if (settings.kit_profiles) kitProfiles = settings.kit_profiles;
+                if (settings.kit_updated_at) kitUpdatedAt = settings.kit_updated_at;
+                if (settings.per_song_overrides) perSongOverrides = settings.per_song_overrides;
+                // The server salvages per key, but an older file can still be
+                // missing a stamp for a profile it does carry — such a
+                // profile simply shows no last-updated time.
             } catch (err) {
                 console.warn(`${PLUGIN_ID}: could not load the saved settings`, err);
             }
@@ -510,7 +563,12 @@
                 const res = await fetch(`/api/plugins/${PLUGIN_ID}/kit-profiles`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ active_kit: activeKit, kit_profiles: kitProfiles }),
+                    body: JSON.stringify({
+                        active_kit: activeKit,
+                        kit_profiles: kitProfiles,
+                        kit_updated_at: kitUpdatedAt,
+                        per_song_overrides: perSongOverrides,
+                    }),
                 });
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
             } catch (err) {
@@ -548,12 +606,34 @@
             return true;
         }
 
-        // ── kit profile / wizard ──────────────────────────────────────────────
+        // ── kit profile management ───────────────────────────────────────────
 
         function getPieceDisplayName(pieceId) {
             if (PIECES[pieceId] && PIECES[pieceId].name) return PIECES[pieceId].name;
-            // Title-case fallback
+            // Title-case fallback — matches lib/drums.py normalise_kit() so a
+            // piece-id this build predates still reads like the rest.
             return pieceId.replace(/_/g, ' ').replace(/\w\S*/g, (w) => w.charAt(0).toUpperCase() + w.substr(1).toLowerCase());
+        }
+
+        function normalizeProfileName(name) {
+            // Server is the authority: routes.py rejects names of
+            // MAX_PROFILE_NAME_LEN (100) or more, so a 100-char name must
+            // survive round-trip here too — the settings panel can create
+            // one and this screen must still be able to select it.
+            return String(name || '').trim().replace(/\s+/g, ' ').slice(0, 100);
+        }
+
+        // Reserved Object.prototype names — routes.py rejects them on write,
+        // and assigning one as a key would hit the setter instead of creating
+        // a profile (the save then reports success for a profile that was
+        // never sent).
+        const RESERVED_PROFILE_NAMES = ['__proto__', 'constructor', 'prototype'];
+
+        // Own-property test: a bare `kitProfiles[name]` read is truthy for
+        // inherited names like `toString`, which would claim a profile exists
+        // when it does not.
+        function hasProfile(name) {
+            return Object.prototype.hasOwnProperty.call(kitProfiles, name);
         }
 
         function getActiveKitProfile() {
@@ -561,11 +641,93 @@
             return kitProfiles[activeKit];
         }
 
+        // One persistence path for every profile mutation: stamp now, save,
+        // re-render. Renames move the old profile's stamp so "last updated"
+        // survives a name change.
+        function stampProfile(name) {
+            try {
+                kitUpdatedAt[name] = new Date().toISOString();
+            } catch (_) { /* stamping is display-only */ }
+        }
+
+        function saveNow() {
+            saveKitProfiles().catch(() => {});
+            emitState();
+        }
+
+        function createKitProfile(name) {
+            const nameClean = normalizeProfileName(name);
+            if (!nameClean) return { ok: false, error: 'A profile name is required.' };
+            if (RESERVED_PROFILE_NAMES.includes(nameClean)) return { ok: false, error: `"${nameClean}" is a reserved name.` };
+            if (hasProfile(nameClean)) return { ok: false, error: `"${nameClean}" already exists.` };
+            kitProfiles[nameClean] = {};
+            stampProfile(nameClean);
+            activeKit = nameClean;
+            scoreResetForProfileChange();
+            saveNow();
+            return { ok: true, name: nameClean };
+        }
+
+        function renameKitProfile(oldName, nextName) {
+            const nameClean = normalizeProfileName(nextName);
+            if (!hasProfile(oldName)) return { ok: false, error: `"${oldName}" is not a saved profile.` };
+            if (!nameClean) return { ok: false, error: 'A profile name is required.' };
+            if (RESERVED_PROFILE_NAMES.includes(nameClean)) return { ok: false, error: `"${nameClean}" is a reserved name.` };
+            if (nameClean !== oldName && hasProfile(nameClean)) {
+                return { ok: false, error: `"${nameClean}" already exists.` };
+            }
+            kitProfiles[nameClean] = kitProfiles[oldName];
+            delete kitProfiles[oldName];
+            if (kitUpdatedAt[oldName]) {
+                kitUpdatedAt[nameClean] = kitUpdatedAt[oldName];
+                delete kitUpdatedAt[oldName];
+            }
+            if (activeKit === oldName) activeKit = nameClean;
+            saveNow();
+            return { ok: true, name: nameClean };
+        }
+
+        function deleteKitProfile(name) {
+            if (!hasProfile(name)) return { ok: false, error: `"${name}" is not a saved profile.` };
+            delete kitProfiles[name];
+            delete kitUpdatedAt[name];
+            // Deleting the active profile falls back to the default rather
+            // than leaving the plugin pointing at nothing — getActiveKitProfile()
+            // recreates an empty `default` on the next access and saveNow()
+            // persists that shape. Scoring resets only on that fallback: an
+            // unrelated delete leaves the active mapping (the only one hit
+            // scoring consults) untouched, so its judgments still stand.
+            if (activeKit === name) {
+                activeKit = 'default';
+                scoreResetForProfileChange();
+            }
+            saveNow();
+            return { ok: true };
+        }
+
+        function setActiveKit(kit) {
+            const name = normalizeProfileName(kit) || 'default';
+            if (!hasProfile(name)) return { ok: false, error: `"${name}" is not a saved profile.` };
+            if (activeKit === name) return { ok: true, name };
+            activeKit = name;
+            scoreResetForProfileChange();
+            saveNow();
+            return { ok: true, name };
+        }
+
+        function getActiveKitName() {
+            return activeKit;
+        }
+
+        function getPieces() {
+            return Object.assign({}, PIECES);
+        }
+
         function setKitMapping(pieceId, mapping) {
             const profile = getActiveKitProfile();
             profile[pieceId] = mapping;
-            saveKitProfiles().catch(() => {});
-            emitState();
+            stampProfile(activeKit);
+            saveNow();
         }
 
         function findConflictingMapping(pieceId, mapping) {
@@ -584,9 +746,15 @@
             const profile = getActiveKitProfile();
             if (profile[pieceId]) {
                 delete profile[pieceId];
-                saveKitProfiles().catch(() => {});
-                emitState();
+                stampProfile(activeKit);
+                saveNow();
             }
+        }
+
+        // The song key the chart stream arrived under; per-song override
+        // lookups qualify through it.
+        function songKeyForChart() {
+            return chartSongKey;
         }
 
         function resolveKitPiecesFromDrumTab(drumTab) {
@@ -648,27 +816,129 @@
             emitState();
         }
 
-        // ── scoring and hit matching ──────────────────────────────────────────
+        // ── live scoring ──────────────────────────────────────────────────
+        // Mirrors drum_highway_3d's hit detection so the two plugins share
+        // one timing feel: ±50 ms window, EARLY/OK/LATE split at 40% of that
+        // window, misses swept per frame with a connect-time floor.
+        const HIT_TOLERANCE_S = 0.05;
+        const HIT_OK_FRACTION = 0.4;
+        const HIT_GLOW_S = 0.45;    // struck-gem glow decay (provider alpha)
+        const MISS_WASH_S = 1.2;    // missed-gem red wash decay
+        const MAX_UNMAPPED_SAMPLE = 20;
+        const MAX_CHART_HITS = 20000;
+
+        // Trigger -> piece resolution: song overrides first, then the active
+        // profile. An unmapped trigger is reported (count + bounded sample)
+        // instead of silently dropped, so the wizard knows what to ask for.
+        const unmappedSample = [];
+        let unmappedCount = 0;
+
         function findPieceForHit(hit) {
-            const profile = getActiveKitProfile();
-            for (const pieceId of Object.keys(profile)) {
-                const mapping = profile[pieceId];
-                if (mapping &&
-                    mapping.logicalSourceKey === hit.logicalSourceKey &&
-                    mapping.note === hit.note &&
-                    mapping.channel === hit.channel) {
-                    return pieceId;
+            const matchIn = (profile) => {
+                if (!profile) return null;
+                for (const pieceId of Object.keys(profile)) {
+                    const m = profile[pieceId];
+                    if (m &&
+                        m.logicalSourceKey === hit.logicalSourceKey &&
+                        m.note === hit.note &&
+                        m.channel === hit.channel) {
+                        return pieceId;
+                    }
                 }
+                return null;
+            };
+            const overrides = perSongOverrides[songKeyForChart()];
+            return matchIn(overrides) || matchIn(getActiveKitProfile());
+        }
+
+        function recordUnmappedHit(hit) {
+            unmappedCount += 1;
+            if (unmappedSample.length < MAX_UNMAPPED_SAMPLE) {
+                unmappedSample.push({
+                    note: hit.note,
+                    channel: hit.channel,
+                    at: new Date().toISOString(),
+                });
+            }
+        }
+
+        // Chart pieces the active kit profile does not cover — the "needs
+        // mapping" surface the wizard prompts for.
+        function chartUnmappedPieces() {
+            if (!currentDrumTab || !Array.isArray(currentDrumTab.kit)) return [];
+            const profile = getActiveKitProfile();
+            const overrides = perSongOverrides[songKeyForChart()] || {};
+            return currentDrumTab.kit
+                .map((entry) => entry && (entry.id || entry.piece))
+                .filter((pieceId, idx, arr) => typeof pieceId === 'string' && arr.indexOf(pieceId) === idx)
+                .filter((pieceId) => !(profile[pieceId] || overrides[pieceId]));
+        }
+
+        function unmappedSummary() {
+            return {
+                count: unmappedCount,
+                sample: unmappedSample.slice(),
+                missingPieces: chartUnmappedPieces(),
+            };
+        }
+
+        function classifyTiming(delta, tol) {
+            if (!Number.isFinite(delta) || !Number.isFinite(tol)) return 'OK';
+            if (Math.abs(delta) <= tol * HIT_OK_FRACTION) return 'OK';
+            return delta > 0 ? 'EARLY' : 'LATE';
+        }
+
+        function chartHitKey(t, pieceId) {
+            const tNum = Number(t);
+            return `${Number.isFinite(tNum) ? tNum.toFixed(3) : String(t)}|${pieceId}`;
+        }
+
+        // Nearest un-scored chart hit for this piece within the window. The
+        // hits array is sorted by t, so the walk can stop once notes are
+        // beyond the late edge of the window.
+        function findMatchingChartHit(pieceId, now) {
+            for (const hit of currentDrumHits) {
+                if (hit.t > now + HIT_TOLERANCE_S) break;
+                if (hit.t < now - HIT_TOLERANCE_S) continue;
+                if (hit.p !== pieceId) continue;
+                if (scoredJudgments.has(chartHitKey(hit.t, hit.p))) continue;
+                return hit;
             }
             return null;
         }
 
         function handleHitForScoring(hit) {
             const pieceId = findPieceForHit(hit);
-            if (!pieceId) return;
-            // For now, just count hits - full matching against chart timing
-            // would require comparing against currentDrumHits array with timing
-            scoreState.hits += 1;
+            if (!pieceId) {
+                recordUnmappedHit(hit);
+                emitState();
+                return;
+            }
+            const now = playbackTime();
+            if (now === null) {
+                // Free-play (no playback clock): a strike is still practice,
+                // but without a timeline there is nothing to score against.
+                scoreState.extras += 1;
+                emitState();
+                return;
+            }
+            const matched = findMatchingChartHit(pieceId, now);
+            if (matched) {
+                scoredJudgments.set(chartHitKey(matched.t, matched.p), {
+                    state: 'hit',
+                    at: performance.now(),
+                    ts: classifyTiming(matched.t - now, HIT_TOLERANCE_S),
+                });
+                scoreState.hits += 1;
+                scoreState.streak += 1;
+                if (scoreState.streak > scoreState.bestStreak) scoreState.bestStreak = scoreState.streak;
+            } else {
+                // A resolved piece with no chart note nearby: an extra or
+                // unexpected hit. Fills and ghost taps that aren't in an
+                // (often simplified) chart are practice, not failure — they
+                // cost no penalty in v1 and are not counted as hits either.
+                scoreState.extras += 1;
+            }
             scoreState.total = scoreState.hits + scoreState.misses;
             if (scoreState.total > 0) {
                 scoreState.accuracy = Math.round((scoreState.hits / scoreState.total) * 100);
@@ -676,63 +946,165 @@
             emitState();
         }
 
-        function resetScore() {
+        // One frame of miss accounting over the sorted chart: unhit notes
+        // between the sweep floor and the tolerance edge become misses (the
+        // per-frame cadence keeps the 2 s look-back window always populated,
+        // same scheme as drum_highway_3d's _updateMissed).
+        function sweepMisses(now) {
+            if (!currentDrumHits.length) return;
+            const cutoff = now - HIT_TOLERANCE_S - 0.02;
+            let changed = false;
+            for (const hit of currentDrumHits) {
+                if (hit.t > cutoff) break;
+                if (hit.t < cutoff - 2) continue;   // older than 2 s — already counted
+                if (hit.t <= missFloor) continue;   // elapsed with no device able to record it
+                const key = chartHitKey(hit.t, hit.p);
+                if (scoredJudgments.has(key)) continue;
+                scoredJudgments.set(key, { state: 'miss', at: performance.now() });
+                scoreState.misses += 1;
+                scoreState.streak = 0;
+                changed = true;
+            }
+            if (changed) {
+                scoreState.total = scoreState.hits + scoreState.misses;
+                if (scoreState.total > 0) {
+                    scoreState.accuracy = Math.round((scoreState.hits / scoreState.total) * 100);
+                }
+                emitState();
+            }
+        }
+
+        function playbackTime() {
+            const hw = window.highway;
+            try {
+                if (hw && typeof hw.getTime === 'function') {
+                    const t = hw.getTime();
+                    return Number.isFinite(t) ? t : null;
+                }
+            } catch (_) { /* no clock — scoring stays inert rather than throwing */ }
+            return null;
+        }
+
+        // Drives the miss sweep off the highway's playback clock. Runs only
+        // while this screen is active AND a device session is open — with no
+        // device the user cannot hit anything, so counting passed notes as
+        // misses would corrupt the accuracy readout.
+        function startMissSweep() {
+            if (sweepTimer !== null) return;
+            const tick = () => {
+                sweepTimer = null;
+                if (!active) return;
+                const openCount = sessions.size;
+                const now = playbackTime();
+                if (openCount === 0) {
+                    hadOpenSession = false;
+                    // Nothing can score with no device — release the highway
+                    // slot so another scorer (notedetect) can claim it.
+                    clearNoteStateProvider();
+                } else {
+                    if (!hadOpenSession) {
+                        // First session on this chart: nothing is banked for
+                        // notes that passed before input could reach us, and
+                        // the provider slot arms only now that scoring can
+                        // actually run.
+                        hadOpenSession = true;
+                        if (now !== null) missFloor = Math.max(missFloor, now);
+                        registerWithHighway();
+                    }
+                    if (now !== null) {
+                        // Seek-back re-arms the skipped region so replayed
+                        // notes count again.
+                        if (now < missFloor) missFloor = now;
+                        sweepMisses(now);
+                        lastPlaybackTime = now;
+                    }
+                }
+                if (sweepTimer === null) sweepTimer = requestAnimationFrame(tick);
+            };
+            sweepTimer = requestAnimationFrame(tick);
+        }
+
+        function stopMissSweep() {
+            if (sweepTimer !== null) {
+                cancelAnimationFrame(sweepTimer);
+                sweepTimer = null;
+            }
+        }
+
+        function resetScoreInternal() {
+            scoredJudgments.clear();
             scoreState = {
                 hits: 0,
                 misses: 0,
                 total: 0,
                 accuracy: 0,
+                streak: 0,
+                bestStreak: 0,
+                extras: 0,
             };
+            missFloor = -Infinity;
+            lastPlaybackTime = null;
+            unmappedCount = 0;
+            unmappedSample.length = 0;
+            hadOpenSession = false;
+        }
+
+        function resetScore() {
+            resetScoreInternal();
             emitState();
         }
 
-        // ── note state provider (highway integration) ─────────────────────────
-        function setNoteStateProvider(provider) {
-            noteStateProvider = provider;
-            lastNoteState = null;
+        // Profile switch mid-song: prior judgments resolve against the old
+        // mapping, so they reset — without a song reload (issue #7).
+        function scoreResetForProfileChange() {
+            resetScoreInternal();
+            emitState();
         }
 
-        // Expose the provider setter globally and also register with highway if available
+        // ── note-state provider (renderer-agnostic feedback) ─────────────────
+        // Contract (core CLAUDE.md, feedBack#254): highway.setNoteStateProvider
+        // takes a FUNCTION (note, chartTime) => falsy | 'hit' | 'active' |
+        // 'miss' | { state, alpha?, color? } — last call wins, cleared with
+        // setNoteStateProvider(null). Drum hits aren't chorded, so chartTime
+        // === note.t. The provider owns all fade timing: it returns a decaying
+        // alpha for a struck/missed gem and falsy once the effect ends.
+        function _noteStateFn(note, chartTime) {
+            if (!note || !scoredJudgments.size) return null;
+            const t = Number.isFinite(Number(chartTime)) ? chartTime : note.t;
+            const judgment = scoredJudgments.get(chartHitKey(t, note.p));
+            if (!judgment) return null;
+            const decayS = judgment.state === 'hit' ? HIT_GLOW_S : MISS_WASH_S;
+            const alpha = Math.max(0, 1 - (performance.now() - judgment.at) / (decayS * 1000));
+            if (alpha <= 0) return null;   // glow over — release the gem
+            return { state: judgment.state, alpha };
+        }
+
         function registerWithHighway() {
+            if (providerInstalled) return true;
+            const hw = window.highway;
+            if (!hw || typeof hw.setNoteStateProvider !== 'function') return false;
             try {
-                const hw = (window.feedBack && window.feedBack.highway) || window.highway;
-                if (hw && typeof hw.setNoteStateProvider === 'function') {
-                    hw.setNoteStateProvider({
-                        setNoteState: (note, state, velocity) => {
-                            if (noteStateProvider && typeof noteStateProvider.setNoteState === 'function') {
-                                noteStateProvider.setNoteState(note, state, velocity);
-                            }
-                        },
-                        clear: () => {
-                            if (noteStateProvider && typeof noteStateProvider.clear === 'function') {
-                                noteStateProvider.clear();
-                            }
-                        },
-                    });
+                const current = typeof hw.getNoteStateProvider === 'function' ? hw.getNoteStateProvider() : null;
+                if (current === _noteStateFn) {
+                    providerInstalled = true;
+                    return true;
                 }
+                hw.setNoteStateProvider(_noteStateFn);
+                providerInstalled = true;
+                return true;
             } catch (err) {
                 console.warn(`${PLUGIN_ID}: could not register with highway`, err);
+                return false;
             }
         }
 
         function clearNoteStateProvider() {
-            noteStateProvider = null;
-            lastNoteState = null;
-        }
-
-        function updateNoteStateForHit(hit) {
-            const pieceId = findPieceForHit(hit);
-            if (!pieceId || !noteStateProvider || typeof noteStateProvider.setNoteState !== 'function') {
-                return;
-            }
+            if (!providerInstalled) return;
+            const hw = window.highway;
             try {
-                // Map to note index as expected by the provider
-                // The provider typically takes (noteIndex, state, velocity)
-                noteStateProvider.setNoteState(pieceId, true, hit.velocity / 127);
-                // Clear after a short duration if needed - but the provider manages timing
-            } catch (err) {
-                console.warn(`${PLUGIN_ID}: note state provider error`, err);
-            }
+                if (hw && typeof hw.setNoteStateProvider === 'function') hw.setNoteStateProvider(null);
+            } catch (_) { /* best-effort */ }
+            providerInstalled = false;
         }
 
         function skipCurrentPiece() {
@@ -758,6 +1130,176 @@
             emitState();
         }
 
+        // ── drum chart consumption (own WS) ─────────────────────────────────
+        // Ground truth (static/highway.js): the highway buffers drum_tab/
+        // drum_hits into its renderer bundle only — neither is re-emitted as a
+        // window.feedBack bus event and there is no getDrumTab() getter — so a
+        // non-renderer plugin holds its own listener on the same WS endpoint.
+        // The server's extraction caches make the second connection cheap.
+        // Legacy packs (drums encoded as guitar notes) stream a notes stream
+        // and no drum_tab: per issue #6 v1 treats those as "no drum chart"
+        // rather than shipping its own legacy decoder.
+        function chartFilename() {
+            const song = window.feedBack && window.feedBack.currentSong;
+            const fn = song && song.filename;
+            return (typeof fn === 'string' && fn) ? fn : null;
+        }
+
+        function disconnectChartWs() {
+            chartWsGen += 1;
+            const ws = chartWs;
+            chartWs = null;
+            if (ws) {
+                try { ws.onclose = null; ws.onerror = null; ws.onmessage = null; ws.close(); } catch (_) { /* best-effort */ }
+            }
+            chartStatus = 'idle';
+            chartReason = '';
+        }
+
+        function connectChartWs() {
+            if (!active) return;
+            const filename = chartFilename();
+            if (!filename) { chartStatus = currentDrumTab ? chartStatus : 'idle'; return; }
+            const gen = ++chartWsGen;
+            const prev = chartWs;
+            chartWs = null;
+            if (prev) {
+                try { prev.onclose = null; prev.onerror = null; prev.onmessage = null; prev.close(); } catch (_) { /* best-effort */ }
+            }
+            if (chartSongKey !== filename) {
+                // A different song invalidates the chart knowledge wholesale.
+                currentDrumTab = null;
+                currentDrumHits = [];
+                drumParts = [];
+                activePartId = null;
+                resetScoreInternal();
+            }
+            chartSongKey = filename;
+            chartStatus = 'connecting';
+            emitState();
+
+            let next;
+            try {
+                const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+                let url = `${proto}//${location.host}/ws/highway/${encodeURIComponent(filename)}`;
+                if (activePartId) url += `?drum_part=${encodeURIComponent(activePartId)}`;
+                next = new WebSocket(url);
+            } catch (err) {
+                chartStatus = 'failed';
+                chartReason = String((err && err.message) || err);
+                emitState();
+                return;
+            }
+            chartWs = next;
+            next.onmessage = (ev) => {
+                if (chartWsGen !== gen) return;   // superseded mid-flight
+                onChartMessage(ev);
+            };
+            next.onclose = () => {
+                if (chartWsGen !== gen) return;
+                chartWs = null;
+                // Keep the last chart so mappings/wizard stay meaningful; the
+                // next song:loaded (or re-activation) reconnects.
+                chartStatus = 'closed';
+                emitState();
+            };
+            next.onerror = () => {
+                if (chartWsGen !== gen) return;
+                chartStatus = 'failed';
+                chartReason = 'could not reach the highway socket';
+                emitState();
+            };
+        }
+
+        function onChartMessage(ev) {
+            let msg;
+            try { msg = JSON.parse(ev.data); } catch (_) { /* keep-alives only */ return; }
+            if (!msg || typeof msg !== 'object' || !msg.type) return;
+            switch (msg.type) {
+                case 'song_info':
+                    drumParts = Array.isArray(msg.drum_parts)
+                        ? msg.drum_parts.filter((p) => p && typeof p.id === 'string').map((p) => ({ id: p.id, name: p.name || p.id }))
+                        : [];
+                    if (!msg.has_drum_tab) {
+                        currentDrumTab = null;
+                        currentDrumHits = [];
+                        resetScoreInternal();
+                        chartStatus = 'no-chart';
+                    }
+                    break;
+                case 'drum_tab': {
+                    currentDrumTab = {
+                        version: Number.isInteger(msg.version) ? msg.version : 1,
+                        name: (typeof msg.name === 'string' && msg.name) ? msg.name : 'Drums',
+                        kit: Array.isArray(msg.kit) ? msg.kit : [],
+                        part_id: (typeof msg.part_id === 'string' && msg.part_id) ? msg.part_id : null,
+                    };
+                    if (currentDrumTab.part_id) activePartId = currentDrumTab.part_id;
+                    // Reset per drum_tab (hits stream after): defends against
+                    // an arrangement-change replay reusing stale hits.
+                    // Mirror the authoritative streaming part (the server
+                    // resolves an unknown/absent ?drum_part= to the primary),
+                    // so the picker stays honest after a fallback.
+                    currentDrumHits = [];
+                    resetScoreInternal();
+                    chartStatus = 'loading';
+                    break;
+                }
+                case 'drum_hits': {
+                    if (!Array.isArray(msg.data)) break;
+                    for (const hit of msg.data) {
+                        if (currentDrumHits.length >= MAX_CHART_HITS) break;
+                        if (!hit || typeof hit.p !== 'string' || !hit.p) continue;
+                        const t = Number(hit.t);
+                        if (!Number.isFinite(t)) continue;
+                        const clean = { t, p: hit.p };
+                        if (Number.isFinite(Number(hit.v))) clean.v = Number(hit.v);
+                        if (hit.g) clean.g = true;
+                        if (hit.f) clean.f = true;
+                        if (Number.isFinite(Number(hit.k))) clean.k = Number(hit.k);
+                        currentDrumHits.push(clean);
+                    }
+                    currentDrumHits.sort((a, b) => a.t - b.t);
+                    break;
+                }
+                case 'ready':
+                    // Wire order is drum_tab → drum_hits chunks → … → ready, so
+                    // `ready` completes the chart.
+                    if (currentDrumTab) chartStatus = 'ready';
+                    break;
+                default:
+                    break;
+            }
+            emitState();
+        }
+
+        // `song:loaded` carries window.feedBack.currentSong (including
+        // `filename`): the trigger for chart consumption on every song switch.
+        function onSongLoaded(ev) {
+            const song = (ev && ev.detail) || (window.feedBack && window.feedBack.currentSong) || null;
+            const fn = song && typeof song.filename === 'string' ? song.filename : null;
+            if (fn && active) connectChartWs();
+            emitState();
+        }
+
+        // The bus may not exist yet when screen.js first runs, so this stays
+        // retryable like the layer's own sources-changed binding.
+        function bindChartBus() {
+            if (chartBusBound) return;
+            const bus = window.feedBack;
+            if (!bus || typeof bus.on !== 'function') return;
+            chartBusBound = true;
+            bus.on('song:loaded', onSongLoaded);
+        }
+
+        function unbindChartBus() {
+            const bus = window.feedBack;
+            if (chartBusBound && bus && typeof bus.off === 'function') {
+                try { bus.off('song:loaded', onSongLoaded); } catch (_) { /* best-effort */ }
+            }
+            chartBusBound = false;
+        }
+
         // ── screen lifecycle ─────────────────────────────────────────────────
 
         function setActive(next) {
@@ -766,6 +1308,7 @@
             // script runs, while the layer is already active. Both hooks are
             // flag-guarded, so repeating them costs nothing.
             bindSourcesChanged();
+            bindChartBus();
             // Views use this to re-subscribe their own bus handlers, which face
             // the same late-bus problem.
             activateListeners.forEach((fn) => {
@@ -776,19 +1319,21 @@
             if (!active) {
                 // Exit path: release every session rather than leaving a device
                 // held open behind a screen nobody is looking at. `savedKeys`
-                // survives, so re-entering restores the same devices.
+                // survives, so re-entering restores the same devices. Scoring
+                // teardown mirrors it: the sweep stops, the note-state provider
+                // releases its "last call wins" slot, and the chart WS closes.
                 closeAll();
+                stopMissSweep();
+                clearNoteStateProvider();
+                disconnectChartWs();
                 emitState();
                 return;
             }
-            // The bus may only have appeared since the last activation.
-            if (!keysLoaded) {
-                // Serialise: the persisted selection decides what to re-open,
-                // so it has to land before discovery triggers `restore()`.
-                loadSaved().then(() => activate()).catch(() => {});
-            } else {
-                activate().catch(() => {});
-            }
+            // Always refetch persisted kit/settings state on activation so changes
+            // from the settings panel (or other sessions) are picked up. The
+            // persisted selection decides what to re-open, so it has to land
+            // before discovery triggers `restore()`.
+            loadSaved().then(() => activate()).catch(() => {});
         }
 
         async function activate() {
@@ -800,6 +1345,9 @@
             const alreadyDiscovered = discovered;
             await discover();
             if (alreadyDiscovered) await restore();
+            if (sessions.size > 0) registerWithHighway();
+            startMissSweep();
+            connectChartWs();
         }
 
         // Terminal teardown, used when screen.js is re-executed so the previous
@@ -809,6 +1357,7 @@
         // state it can no longer render.
         function dispose() {
             setActive(false);
+            unbindChartBus();
             const bus = window.feedBack;
             if (sourcesChangedBound && bus && typeof bus.off === 'function') {
                 try { bus.off('midi-input:sources-changed', onSourcesChanged); } catch (_) { /* best-effort */ }
@@ -841,28 +1390,42 @@
                 if (typeof fn === 'function') activateListeners.add(fn);
                 return () => activateListeners.delete(fn);
             },
-            // Drum tab / wizard API
+            // Drum tab / wizard API. The chart flows in over the layer's own
+            // WS once a song loads; these setters remain for hosts/tests that
+            // push data directly.
             setCurrentDrumTab(drumTab) {
                 currentDrumTab = drumTab;
+                resetScoreInternal();
                 emitState();
             },
             setCurrentDrumHits(hits) {
-                currentDrumHits = hits;
+                currentDrumHits = Array.isArray(hits) ? hits.slice() : [];
+                resetScoreInternal();
                 emitState();
             },
-            setCurrentDrumPart(part) {
-                currentDrumPart = part;
+            setCurrentDrumPart(partId) {
+                activePartId = (typeof partId === 'string' && partId) ? partId : null;
+                // Reconnect so the server streams the picked part's tab.
+                connectChartWs();
                 emitState();
             },
-            setNoteStateProvider,
+            getDrumParts() {
+                return drumParts.slice();
+            },
+            getActivePartId() {
+                return activePartId;
+            },
+            getChartStatus() {
+                return { status: chartStatus, reason: chartReason };
+            },
             clearNoteStateProvider,
+            registerWithHighway,
             resetScore,
             getScoreState() {
                 return { ...scoreState };
             },
-            onDrumTabChanged(fn) {
-                if (typeof fn === 'function') drumTabListeners.add(fn);
-                return () => drumTabListeners.delete(fn);
+            getUnmappedSummary() {
+                return unmappedSummary();
             },
             startWizard,
             resetWizard,
@@ -873,11 +1436,12 @@
             confirmWizardHit,
             retryWizardHit,
             clearKitMapping,
-            setActiveKit(kit) {
-                activeKit = kit || 'default';
-                saveKitProfiles().catch(() => {});
-                emitState();
-            },
+            createKitProfile,
+            renameKitProfile,
+            deleteKitProfile,
+            setActiveKit,
+            getActiveKitName,
+            getPieces,
             getPieceDisplayName,
         };
     }
@@ -979,6 +1543,18 @@
         const hitCountEl = root.querySelector('[data-role="hit-count"]');
         const scoreHitsEl = root.querySelector('[data-role="score-hits"]');
         const scoreAccuracyEl = root.querySelector('[data-role="score-accuracy"]');
+        const scoreStreakEl = root.querySelector('[data-role="score-streak"]');
+        const scoreExtrasEl = root.querySelector('[data-role="score-extras"]');
+        const unmappedEl = root.querySelector('[data-role="score-unmapped"]');
+
+        // Chart consumption elements
+        const chartStatusEl = root.querySelector('[data-role="chart-status"]');
+        const drumPartSel = root.querySelector('[data-role="drum-part"]');
+
+        // Kit profile elements
+        const profileSel = root.querySelector('[data-role="profile-select"]');
+        const profileNameEl = root.querySelector('[data-role="profile-name"]');
+        const profileCreateBtn = root.querySelector('[data-role="profile-create"]');
 
         // Wizard elements
         const wizardStartBtn = root.querySelector('[data-role="wizard-start"]');
@@ -1033,17 +1609,100 @@
                 savedEl.hidden = !hint;
             }
 
-            // Score display
+            // Score display. A fresh chart has nothing to be accurate ABOUT,
+            // so the spot shows an em-dash rather than a lie of "100%".
             if (scoreHitsEl) {
                 scoreHitsEl.textContent = `${state.scoreState.hits}/${state.scoreState.total}`;
             }
             if (scoreAccuracyEl) {
-                scoreAccuracyEl.textContent = `${state.scoreState.accuracy}%`;
+                scoreAccuracyEl.textContent = state.scoreState.total > 0 ? `${state.scoreState.accuracy}%` : '—';
+            }
+            if (scoreStreakEl) scoreStreakEl.textContent = String(state.scoreState.streak || 0);
+            if (scoreExtrasEl) scoreExtrasEl.textContent = String(state.scoreState.extras || 0);
+            if (unmappedEl) {
+                const parts = [];
+                if (state.unmapped.count > 0) {
+                    parts.push(`${state.unmapped.count} strike${state.unmapped.count === 1 ? '' : 's'} matched no mapped piece`);
+                }
+                if (state.unmapped.missingPieces.length > 0) {
+                    const names = state.unmapped.missingPieces.slice(0, 6).join(', ');
+                    parts.push(`chart pieces not yet mapped: ${names}${state.unmapped.missingPieces.length > 6 ? '…' : ''}`);
+                }
+                unmappedEl.textContent = parts.join(' — ');
+                unmappedEl.hidden = parts.length === 0;
+            }
+
+            // Chart status + part picker
+            if (chartStatusEl) {
+                const text = chartStatusText(state);
+                chartStatusEl.textContent = text;
+                chartStatusEl.hidden = !text;
+            }
+            if (drumPartSel) {
+                syncDrumPartPicker(drumPartSel, state);
+            }
+
+            // Active-kit picker: only rebuilt when the profile set actually
+            // changed, so the open dropdown isn't churned on every hit.
+            if (profileSel) {
+                const names = Object.keys(state.kitProfiles).sort((a, b) => a.localeCompare(b));
+                const sig = names.join('\u0000') + '|' + names.length;
+                if (profileSel.dataset.sig !== sig) {
+                    profileSel.textContent = '';
+                    for (const name of names) {
+                        const opt = document.createElement('option');
+                        opt.value = name;
+                        opt.textContent = name;
+                        profileSel.appendChild(opt);
+                    }
+                    profileSel.dataset.sig = sig;
+                }
+                profileSel.value = state.activeKit;
             }
 
             // Wizard UI updates
             renderWizard(state);
             renderMappings(state);
+        };
+
+        const chartStatusText = (state) => {
+            if (!state.active) return '';
+            switch (state.chartStatus) {
+                case 'connecting': return 'Contacting the chart socket…';
+                case 'loading':
+                    return state.currentDrumTab ? `Loading “${state.currentDrumTab.name}”…` : 'Loading drum chart…';
+                case 'ready': {
+                    const tab = state.currentDrumTab;
+                    if (!tab) return '';
+                    const hits = state.currentDrumHits.length;
+                    const part = tab.part_id ? ` · part ${tab.part_id}` : '';
+                    return `Chart “${tab.name}” — ${hits} hit${hits === 1 ? '' : 's'}${part}`;
+                }
+                case 'no-chart': return 'This song streams no drum chart — scoring is off for it.';
+                case 'closed': return 'The chart socket closed; it reopens on the next song change.';
+                case 'failed': return `The chart socket failed${state.chartReason ? `: ${state.chartReason}` : ''}.`;
+                default: return '';
+            }
+        };
+
+        // The picker is hidden unless the pack actually streams more than one
+        // part; the selected value mirrors what the layer will request, with
+        // the pack's first part standing in for "primary".
+        const syncDrumPartPicker = (sel, state) => {
+            const parts = state.drumParts || [];
+            const sig = parts.map((p) => p.id).join('\u0000') + '|' + String(state.activePartId || '');
+            if (sel.dataset.sig !== sig) {
+                sel.textContent = '';
+                for (const part of parts) {
+                    const opt = document.createElement('option');
+                    opt.value = part.id;
+                    opt.textContent = part.name;
+                    sel.appendChild(opt);
+                }
+                sel.dataset.sig = sig;
+            }
+            sel.value = state.activePartId || (parts[0] ? parts[0].id : '');
+            sel.hidden = parts.length <= 1;
         };
 
         const onHit = (hit) => {
@@ -1199,18 +1858,6 @@
             if (id === null) layer.setActive(root.classList.contains('active'));
             else layer.setActive(id === SCREEN_ID);
         };
-        const onDrumTab = (ev) => {
-            const data = (ev && (ev.detail || ev.data)) || ev;
-            layer.setCurrentDrumTab(data);
-        };
-        const onDrumHits = (ev) => {
-            const data = (ev && (ev.detail || ev.data)) || ev;
-            layer.setCurrentDrumHits(data);
-        };
-        const onDrumPart = (ev) => {
-            const data = (ev && (ev.detail || ev.data)) || ev;
-            layer.setCurrentDrumPart(data);
-        };
         // A full page load is the other exit path. `pageshow` re-syncs so a
         // tab restored from bfcache resumes instead of sitting inactive.
         const onPageHide = () => layer.setActive(false);
@@ -1230,6 +1877,24 @@
         if (wizardNextBtn) wizardNextBtn.addEventListener('click', () => layer.advanceWizard());
         if (wizardDoneBtn) wizardDoneBtn.addEventListener('click', () => layer.resetWizard());
 
+        // Kit profile controls. Failed CRUD (duplicate name, unknown profile)
+        // leaves state untouched, which the next onState re-renders — no
+        // separate error channel needed for v1.
+        if (profileSel) profileSel.addEventListener('change', () => layer.setActiveKit(profileSel.value));
+        if (profileCreateBtn) profileCreateBtn.addEventListener('click', () => {
+            const result = layer.createKitProfile(profileNameEl ? profileNameEl.value : '');
+            if (result.ok && profileNameEl) profileNameEl.value = '';
+            emitOutcomeHint(result);
+        });
+        if (drumPartSel) drumPartSel.addEventListener('change', () => layer.setCurrentDrumPart(drumPartSel.value));
+
+        function emitOutcomeHint(result) {
+            if (!savedEl) return;
+            if (!result || result.ok) return;
+            savedEl.textContent = result.error || 'That change was rejected.';
+            savedEl.hidden = false;
+        }
+
         // Retryable for the same reason as the layer's own bus subscription: the
         // screen lifecycle events are what wake this screen back up, so losing
         // them would leave it permanently inert. `bindBus` is idempotent and is
@@ -1244,21 +1909,31 @@
             busBound = true;
             bus.on('screen:changing', onScreenChanging);
             bus.on('screen:changed', onScreenChanged);
-            // Listen for drum chart/tab events
-            bus.on('drum-tab', onDrumTab);
-            bus.on('drum_tab', onDrumTab);
-            bus.on('drum-hits', onDrumHits);
-            bus.on('drum_hits', onDrumHits);
-            bus.on('drum-part', onDrumPart);
+        }
+
+        // Deep-linked single-piece remap from the Settings panel
+        // (window.feedBack.navigate('plugin-midi-drums', { remapPiece })). The
+        // params are one-shot — getNavParams clears them — and must be
+        // consumed on the activation they arrived with.
+        function onActivation() {
+            bindBus();
+            let params = null;
+            try {
+                params = (window.feedBack && typeof window.feedBack.getNavParams === 'function')
+                    ? window.feedBack.getNavParams()
+                    : null;
+            } catch (_) { params = null; }
+            if (params && typeof params.remapPiece === 'string' && params.remapPiece) {
+                layer.remapPiece(params.remapPiece);
+            }
         }
         bindBus();
-        const unbindActivation = layer.addActivateListener(bindBus);
+        const unbindActivation = layer.addActivateListener(onActivation);
 
         window.addEventListener('pagehide', onPageHide);
         window.addEventListener('pageshow', onPageShow);
 
         onState(layer.getState());
-        registerWithHighway();
 
         return {
             dispose() {
@@ -1269,11 +1944,6 @@
                 if (busBound && bus && typeof bus.off === 'function') {
                     bus.off('screen:changing', onScreenChanging);
                     bus.off('screen:changed', onScreenChanged);
-                    bus.off('drum-tab', onDrumTab);
-                    bus.off('drum_tab', onDrumTab);
-                    bus.off('drum-hits', onDrumHits);
-                    bus.off('drum_hits', onDrumHits);
-                    bus.off('drum-part', onDrumPart);
                 }
                 window.removeEventListener('pagehide', onPageHide);
                 window.removeEventListener('pageshow', onPageShow);
