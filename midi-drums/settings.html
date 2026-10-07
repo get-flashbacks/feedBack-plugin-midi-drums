@@ -2,8 +2,9 @@
   SPDX-License-Identifier: AGPL-3.0-or-later
   Settings panel for midi-drums.
 
-  The Host renders this markup in the plugin's settings panel, grouped under
-  the settings.category ("practice"). All styles are scoped to this panel with
+  The Host renders this markup in the plugin's settings panel. The manifest's
+  settings object does not declare a category, so the Host places this panel
+  in the default settings bucket. All styles are scoped to this panel with
   the midi-drums-settings class prefix; all behavior lives in the inline
   script below.
 
